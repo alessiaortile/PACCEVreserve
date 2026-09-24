@@ -38,6 +38,7 @@ from typing import Optional, Tuple
 
 import numpy as np
 import pandas as pd
+import matplotlib.pyplot as plt
 from scipy.optimize import lsq_linear, nnls
 
 
@@ -170,7 +171,7 @@ def nnls_stable(
     result = lsq_linear(
         matrix,
         observations,
-        bounds=(0, np.inf),
+        bounds=(-np.inf, np.inf), #0 for lower
         method="trf",
         lsmr_tol="auto",
     )
@@ -305,6 +306,8 @@ def load_ev_model_parameters(
 def estimate_arrival_rate_ldp(
     rr_matrix: np.ndarray,
     privatized_arrival_rate: np.ndarray,
+    states: list[Tuple[int, int]],
+    epsilon: float,
     n_days: int = 1,
     max_iter: int = 50,
     tolerance: float = 1e-6,
@@ -345,6 +348,8 @@ def estimate_arrival_rate_ldp(
     lambda_hat = np.zeros((n_states, n_time_steps),dtype=float)
 
     covariance = np.zeros((n_time_steps, n_states, n_states),dtype=float)
+    print(f"Conditoning rr_matrix for epsilon={epsilon:.2f}: {np.linalg.cond(rr_matrix):.2e}, ")
+
 
     for time_index in range(n_time_steps):
 
@@ -354,7 +359,7 @@ def estimate_arrival_rate_ldp(
         # Initial non-negative estimate
         # --------------------------------------------------------------
         try:
-            estimate, _ = nnls(
+            estimate, *_ = nnls(
                 rr_matrix,
                 observations,
             )
@@ -365,9 +370,9 @@ def estimate_arrival_rate_ldp(
             )
 
         estimate = np.clip(
-            estimate,
-            1e-8,
-            None,
+           estimate,
+           1e-8,
+           None,
         )
 
         # --------------------------------------------------------------
@@ -426,7 +431,7 @@ def estimate_arrival_rate_ldp(
             )
 
             try:
-                new_estimate, _ = nnls(
+                new_estimate, *_ = nnls(
                     weighted_matrix,
                     weighted_observations,
                 )
@@ -437,9 +442,9 @@ def estimate_arrival_rate_ldp(
                 )
 
             new_estimate = np.clip(
-                new_estimate,
-                1e-8,
-                None,
+               new_estimate,
+               1e-8,
+               None,
             )
 
             relative_change = (
@@ -500,6 +505,36 @@ def estimate_arrival_rate_ldp(
             + estimator_covariance.T
         )
 
+        if time_index % 5 == 0:
+            plt.figure(figsize=(8, 6))
+            plt.imshow(
+                estimator_covariance,
+                aspect="auto",
+                interpolation="nearest",
+                cmap="viridis",
+            )
+            plt.colorbar(label="Estimator covariance")
+            plt.xlabel("State index")
+            plt.ylabel("State index")
+            plt.title(f"Estimator covariance (time index {time_index})")
+            plt.tight_layout()
+            plt.savefig(f"ec_hm_{time_index}_{epsilon}.png", dpi=300)
+            plt.close()
+
+        
+            
+
+    isflex = 0
+    isbulk = 0
+    print(f"Total states: {n_states}, Total time steps: {n_time_steps}")
+    for time_index in range(n_time_steps):
+        for state_index in range(n_states):
+            if lambda_hat[state_index, time_index] <= 1e-8:
+                #print(f"Zero arrival rate at time step {time_index}, state {states[state_index]}: {lambda_hat[state_index, time_index]}")
+                isflex = isflex + 1 if (states[state_index][1] > 0 and states[state_index][0] > 0) else 0
+                isbulk = isbulk + 1 if (states[state_index][0] == 0 or states[state_index][1] == 0) else 0
+            
+    print(f"Flex state count: {isflex}, Bulk state count: {isbulk} ratio {isflex/(isflex+isbulk):.2f}")
     return lambda_hat, covariance
 
 
@@ -642,6 +677,8 @@ def estimate_arrival_rate_from_records(
             estimate_arrival_rate_ldp(
                 rr_matrix=rr_matrix,
                 privatized_arrival_rate=observed_arrival_rate,
+                states=states,
+                epsilon=epsilon,
                 n_days=n_days,
             )
         )

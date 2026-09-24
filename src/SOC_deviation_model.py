@@ -666,7 +666,7 @@ def cooptimization(lam,sigma, status, flex_state, price_up, price_down, real_pri
     print("qexpress_up:", [qexpr_up[t].getValue() for t in range(T)])
     print("qexpress_down:", [qexpr_down[t].getValue() for t in range(T)])
     
-    # to comment to avoid PP 
+    # to comment for NoPP 
     if DP == "CDP":
         bid_up, bid_down = arrival_bias_propagation(status,T,lam,z,y,eps,next_charge,next_slack,
             flex_state,p_rate,r_up_x,r_down_x,kappa_h,tau_up,tau_down,T_h,H,price_up,price_down)
@@ -710,6 +710,8 @@ def error_log(lam, real_lam, sigma, status, T):
 
     print("mean z-score across all states and time steps:", np.mean(np.abs(z)))
     print("max z-score across all states and time steps:", np.max(np.abs(z)))
+    print("avg bias across all states and time steps:", np.mean(np.abs(lam[flex_state] - real_lam[flex_state])))
+    print("avg std across all states and time steps:", np.mean(std))
 
     positive_z = np.maximum(z, 0)
     z_max = np.max(np.abs(positive_z), axis=1)
@@ -896,7 +898,7 @@ if __name__ == "__main__":
         s_hat = np.sqrt((lam + sigma_eta2) / n_days)
         b_hat = {(j, t): s_hat[j][t] / np.sqrt(2 * np.pi) for j in range(len(status)) for t in range(T)}
         lam_ubias = lam - np.array([[b_hat[j, t] for t in range(T)] for j in range(len(status))])
-        lam_ubias[lam_ubias < 0] = 0
+        #lam_ubias[lam_ubias < 0] = 0
         
         error_log(lam_ubias, real_lam, sigma, status, T)
 
@@ -917,7 +919,7 @@ if __name__ == "__main__":
     n = len(status)
     next_charge, next_slack = build_state_predecessor_maps(status)
     flex_state = [i for i, (charge, slack) in enumerate(status) if charge > 0 and slack > 0]
-    beta = 0.1  
+    beta = 0.1 
 
     z,y,bid_up, bid_down, bid_rev, r_up_x, r_down_x, Mz_sol, My_sol = cooptimization(
         lam, sigma,status, flex_state, price_bup, price_bdown, price_el, dt, n, T, H, p_rate, lic_path,eps, DP=DP, beta=beta
@@ -949,7 +951,7 @@ if __name__ == "__main__":
     os.makedirs("results", exist_ok=True)
 
     if eps is not None:
-        path = f"results/SOC_B_policy_results_DP_eps{eps}_{scale_stats}_{DP}_{1-beta}.pkl" #
+        path = f"results/SOC_B_policy_results_DP_eps{eps}_{scale_stats}_{DP}_{1-beta}.pkl" #{1-beta}.
     else:
         path = f"results/SOC_B_policy_results_{int(scale_stats)}_{1-beta}.pkl" #{1-beta}
 

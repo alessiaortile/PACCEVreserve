@@ -16,6 +16,7 @@ source PACCEVreserve/bin/activate	#!!! CREATE YOUR OWN "activate_venv.sh" with t
 module load python3/3.11.9   
 module load pandas/2.2.2-python-3.11.9
 module load scipy/1.13.0-python-3.11.9
+module load  matplotlib/3.8.4-numpy-1.26.4-python-3.11.9  
 
 
 python src/EV_record_generator.py --scale 100 --output data/ev_records.csv --insample-days 60 --oos-days 60 --seed 1042
