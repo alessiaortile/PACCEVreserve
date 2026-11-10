@@ -38,7 +38,7 @@ State = Tuple[int, int]
 
 def record_columns() -> List[str]:
     """Return the column names used in generated EV-record dataframes."""
-    return [
+    cols = [
         "day",
         "time_step",
         "state_idx",
@@ -49,6 +49,12 @@ def record_columns() -> List[str]:
         "energy_charging_time_hours",
         "event_id",
     ]
+    #cols.extend(
+    #    f"bit_{k}"
+    #    for k in range(n_states)
+    #)
+
+    return cols
 
 
 def empty_records_df() -> pd.DataFrame:
@@ -85,7 +91,7 @@ def _sort_records(records: list[dict]) -> pd.DataFrame:
         return empty_records_df()
 
     return (
-        pd.DataFrame.from_records(records, columns=record_columns())
+        pd.DataFrame.from_records(records)#, columns=record_columns())
         .sort_values(
             ["day", "arrival_time_hours", "time_step", "state_idx"]
         )
@@ -168,7 +174,6 @@ def build_event_records(
 
     return _sort_records(records)
 
-
 def build_DPevent_records(
     lam: np.ndarray,
     status: Sequence[State],
@@ -178,94 +183,62 @@ def build_DPevent_records(
     hours: float,
     eps: float = 5.0,
 ) -> pd.DataFrame:
-    """
-    Generate EV records with K-ary randomized response.
 
-    Arrival counts are sampled from the true Poisson rates, then each
-    EV state is independently privatized using the specified privacy
-    parameter.
-
-    Parameters
-    ----------
-    lam, status, days, dt, seed, hours:
-        Same as :func:`build_event_records`.
-    status:
-        EV states represented as ``(charging_steps, slack_steps)``.
-    days:
-        Number of days to simulate.
-    dt:
-        Duration of one time step in hours.
-    seed:
-        Seed for reproducible random sampling.
-    hours:
-        Duration of one simulated day in hours.
-    eps:
-        Non-negative LDP privacy budget. Smaller values provide stronger
-        privacy and produce more state randomization.
-
-    Returns
-    -------
-    pd.DataFrame
-        Generated EV records with privatized state labels.
-    """
-
+    print(f"Generating DP event records with eps={eps}...")
     if eps < 0:
         raise ValueError("eps must be non-negative.")
 
     rng = np.random.default_rng(seed)
     n_states, n_time_steps = lam.shape
-    records: list[dict] = []
 
-    rr_matrix = lps.build_rr_matrix(
-        epsilon=eps,
-        n_states=n_states,
+    print(f"Number of states: {n_states}, number of time steps: {n_time_steps}")
+
+    p = 0.5
+    q = 1.0 / (np.exp(eps) + 1.0)
+
+    observed_bits = np.zeros(
+        (days, n_time_steps, n_states),
+        dtype=np.int32,
     )
 
     for day in range(days):
+
         arrivals = rng.poisson(lam)
 
         for time_step in range(n_time_steps):
-            step_start = time_step * dt
 
             for true_state_idx in range(n_states):
+
                 count = int(arrivals[true_state_idx, time_step])
+
                 if count == 0:
                     continue
 
+                charge, slack = status[true_state_idx]
+
                 for event_number in range(count):
-                    private_state_idx = int(
-                        rng.choice(
-                            n_states,
-                            p=rr_matrix[:, true_state_idx],
-                        )
-                    )
 
-                    charge, slack = status[private_state_idx]
+                    # one-hot encoding
+                    z = np.zeros(n_states, dtype=np.uint8)
+                    z[true_state_idx] = 1
 
-                    arrival_time = (
-                        day * hours
-                        + step_start
-                        + float(rng.uniform(0.0, dt))
-                    )
+                    # OUE perturbation
+                    y = np.zeros(n_states, dtype=np.uint8)
 
-                    records.append(
-                        _event_record(
-                            day=day,
-                            time_step=time_step,
-                            state_idx=private_state_idx,
-                            charge=charge,
-                            slack=slack,
-                            arrival_time=arrival_time,
-                            dt=dt,
-                            event_id=(
-                                f"d{day}_t{time_step}_s"
-                                f"{true_state_idx}_rr"
-                                f"{private_state_idx}_{event_number}"
-                            ),
-                        )
-                    )
+                    ones = z == 1
+                    zeros = ~ones
 
-    return _sort_records(records)
+                    y[ones] = (
+                        rng.random(np.sum(ones)) < p
+                    ).astype(np.uint8)
+
+                    y[zeros] = (
+                        rng.random(np.sum(zeros)) < q
+                    ).astype(np.uint8)
+
+                    observed_bits[day, time_step, :] += y
+
+    return observed_bits 
 
 
 def split_records_by_day(
@@ -325,6 +298,34 @@ def split_records_by_day(
 
     return insample, outsample
 
+def split_observed_bits_by_day(
+    observed_bits: np.ndarray,
+    insample_days: int,
+    outsample_days: int,
+    seed: int,
+):
+
+    rng = np.random.default_rng(seed)
+
+    all_days = np.arange(
+        observed_bits.shape[0]
+    )
+
+    selected_days = rng.permutation(
+        all_days
+    )
+
+    insample_idx = selected_days[:insample_days]
+
+    outsample_idx = selected_days[
+        insample_days:
+        insample_days + outsample_days
+    ]
+
+    return (
+        observed_bits[insample_idx],
+        observed_bits[outsample_idx],
+    )
 
 def build_split_output_path(base_output: Path, suffix: str) -> Path:
     """Return an output path with ``suffix`` added to its filename stem."""
@@ -434,6 +435,7 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+
 def main() -> int:
     """Run the EV record-generation pipeline."""
     args = parse_args()
@@ -471,7 +473,7 @@ def main() -> int:
     lam = lam[:, :n_time_steps]
 
     if args.DP == "LDP":
-        records = build_DPevent_records(
+        observed_bits = build_DPevent_records(
             lam=lam,
             status=status,
             days=args.days,
@@ -485,6 +487,37 @@ def main() -> int:
             f"{args.output.stem}_{args.scale}"
             f"_DP_eps{args.eps}{args.output.suffix}"
         )
+
+        ob_is, ob_oos = split_observed_bits_by_day(
+            observed_bits=observed_bits,
+            insample_days=args.insample_days,
+            outsample_days=args.oos_days,
+            seed=args.seed,
+        )
+
+        insample_output = (
+            args.insample_output
+            or build_split_output_path(args.output, "insample")
+        )
+
+        oos_output = (
+            args.oos_output
+            or build_split_output_path(args.output, "oos")
+        )
+
+        insample_output.parent.mkdir(parents=True, exist_ok=True)
+        oos_output.parent.mkdir(parents=True, exist_ok=True)
+
+        np.savez_compressed(
+            insample_output.with_suffix(".npz"),
+            observed_bits=ob_is,
+        )
+
+        np.savez_compressed(
+            oos_output.with_suffix(".npz"),
+            observed_bits=ob_oos,
+        )
+
     else:
         records = build_event_records(
             lam=lam,
@@ -499,28 +532,28 @@ def main() -> int:
             f"{args.output.stem}_{args.scale}{args.output.suffix}"
         )
 
-    insample, outsample = split_records_by_day(
-        df=records,
-        insample_days=args.insample_days,
-        outsample_days=args.oos_days,
-        seed=args.seed,
-    )
+        insample, outsample = split_records_by_day(
+            df=records,
+            insample_days=args.insample_days,
+            outsample_days=args.oos_days,
+            seed=args.seed,
+        )
 
-    insample_output = (
-        args.insample_output
-        or build_split_output_path(args.output, "insample")
-    )
+        insample_output = (
+            args.insample_output
+            or build_split_output_path(args.output, "insample")
+        )
 
-    oos_output = (
-        args.oos_output
-        or build_split_output_path(args.output, "oos")
-    )
+        oos_output = (
+            args.oos_output
+            or build_split_output_path(args.output, "oos")
+        )
 
-    insample_output.parent.mkdir(parents=True, exist_ok=True)
-    oos_output.parent.mkdir(parents=True, exist_ok=True)
+        insample_output.parent.mkdir(parents=True, exist_ok=True)
+        oos_output.parent.mkdir(parents=True, exist_ok=True)
 
-    insample.to_csv(insample_output, index=False)
-    outsample.to_csv(oos_output, index=False)
+        insample.to_csv(insample_output, index=False)
+        outsample.to_csv(oos_output, index=False)
 
     print(f"Generated {len(insample)} in-sample records.")
     print(f"Generated {len(outsample)} out-of-sample records.")

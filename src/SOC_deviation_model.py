@@ -204,7 +204,7 @@ def deviation_bounds(lam, alpha):
 # ----------------------------------------------------------------------
 
 def arrival_bias_propagation(status,T,lam,z,y,eps,next_charge,next_slack,
-    flex_state,p_rate,r_up_x,r_down_x,kappa_h,tau_up,tau_down,T_h,H,price_up,price_down,):
+    flex_state,p_rate,r_up_x,r_down_x,kappa_h,tau_up,tau_down,T_h,H,price_up,price_down,projection_error,privacy):
     """
     Estimate arrival-induced reserve bias and optimize bias-adjusted bids.
 
@@ -240,11 +240,44 @@ def arrival_bias_propagation(status,T,lam,z,y,eps,next_charge,next_slack,
 
     n_days = 60
     Delta1 = 2.0
-    q = np.exp(-eps / Delta1)
-    sigma_eta2 = 2.0 * q / (1.0 - q)**2
 
-    s_hat = np.sqrt((lam + sigma_eta2) / n_days)
-    b_hat = {(j, t): s_hat[j][t] / np.sqrt(2 * np.pi) for j in range(len(status)) for t in range(T)}
+    if privacy == "CDP":
+        # q = np.exp(-eps / Delta1)
+        # sigma_eta2 = 2.0 * q / (1.0 - q)**2
+
+        # s_hat = np.sqrt((lam + sigma_eta2) / n_days)
+        # b_hat = {(j, t): s_hat[j][t] / np.sqrt(2 * np.pi) for j in range(len(status)) for t in range(T)}
+        print(f"projection_error shape: {projection_error.shape}")
+        b_hat = {(j, t): projection_error[j][t] for j in range(len(status)) for t in range(T)}
+
+    elif privacy == "LDP":
+        # p = 0.5
+        # q = 1.0 / (np.exp(eps) + 1.0)
+
+        # # shape (T,)
+        # N_t = np.sum(lam, axis=0)
+
+        # # avoid division by zero
+        # N_t_safe = np.maximum(N_t, 1e-12)
+
+        # # shape (n_states, T)
+        # r = q + (p - q) * lam / N_t_safe
+
+        # sigma2_oue = (
+        #     lam / n_days
+        #     + r * (1.0 - r)
+        #     / (n_days * (p - q) ** 2)
+        # )
+
+        # s_hat = np.sqrt(sigma2_oue)
+
+        # b_hat = {
+        #     (j, t): s_hat[j, t] / 2 #np.sqrt(2 * np.pi)
+        #     for j in range(len(status))
+        #     for t in range(T)
+        # }
+        print(f"projection_error shape: {projection_error.shape}")
+        b_hat = {(j, t): projection_error[j][t] for j in range(len(status)) for t in range(T)}
 
     n_current = [b_hat[j, 0] for j in range(len(status))]
     for t in range(T):
@@ -432,7 +465,7 @@ def arrival_bias_propagation_ldp(status, T, lam, z, y, eps, next_charge, next_sl
     return bid_up, bid_down
 
 def cooptimization(lam,sigma, status, flex_state, price_up, price_down, real_price,
-                    dt, n, T, H,H_matrix, p_rate, lic_path,eps,DP, beta=0.1):
+                    dt, n, T, H, p_rate, lic_path,eps,DP, beta=0.1):
     """
     Solve the robust EV charging and reserve co-optimization problem.
 
@@ -805,10 +838,11 @@ def cooptimization(lam,sigma, status, flex_state, price_up, price_down, real_pri
     print("qexpress_up:", [qexpr_up[t].getValue() for t in range(T)])
     print("qexpress_down:", [qexpr_down[t].getValue() for t in range(T)])
     
+    bid_up, bid_down = arrival_bias_propagation(status,T,lam,z,y,eps,next_charge,next_slack,
+            flex_state,p_rate,r_up_x,r_down_x,kappa_h,tau_up,tau_down,T_h,H,price_up,price_down,projection_error,DP)
     # to comment for NoPP 
-    if DP == "CDP":
-        bid_up, bid_down = arrival_bias_propagation(status,T,lam,z,y,eps,next_charge,next_slack,
-            flex_state,p_rate,r_up_x,r_down_x,kappa_h,tau_up,tau_down,T_h,H,price_up,price_down)
+    #if DP == "CDP":
+        
     #elif DP == "LDP":
     #    bid_up, bid_down = arrival_bias_propagation_ldp(status,T,lam,z,y,eps,next_charge,next_slack,
     #        flex_state,p_rate,r_up_x,r_down_x,kappa_h,tau_up,tau_down,T_h,H,H_matrix,price_up,price_down)
@@ -948,7 +982,7 @@ if __name__ == "__main__":
     price_bup = fcrd_down_matrix.mean(axis=0)
     price_bdown = fcrd_up_matrix.mean(axis=0)
 
-    H_matrix = None
+    #H_matrix = None
 
     if DP == "LDP":
         print("Loading lambda inference results...")
@@ -965,8 +999,9 @@ if __name__ == "__main__":
             real_lam = np.array(data["results"]["lambda_real"])
             sigma = data["metadata"]["sigma"]
             status = [tuple(s) for s in data["metadata"]["status"]]
+            projection_error = np.array(data["metadata"]["projection_error"])
 
-            H_matrix = build_rr_matrix(eps, len(status))
+            #H_matrix = build_rr_matrix(eps, len(status))
 
             error_log(lam, real_lam, sigma, status, T)
 
@@ -975,7 +1010,7 @@ if __name__ == "__main__":
             _, status = load_ev_model_parameters(dt, p_rate, scale_stats)
 
             print("Inferring lambda with DP...")
-            lam_hat, status, sigma, Sigma_lambda = (
+            lam_hat, status, sigma, Sigma_lambda, projection_error = (
                 estimate_arrival_rate_from_records(
                     states=status,
                     n_time_steps=T,
@@ -1007,7 +1042,7 @@ if __name__ == "__main__":
                 }
             }
 
-            H_matrix = build_rr_matrix(eps, len(status))
+            #H_matrix = build_rr_matrix(eps, len(status))
 
             filename = f"data/lambda_inference_{dt:.2f}_{eps}_{H}_{int(scale_stats)}.pkl"
             with open(filename, "wb") as f:
@@ -1016,7 +1051,7 @@ if __name__ == "__main__":
 
     elif DP == "CDP":
         _, status = load_ev_model_parameters(dt, p_rate, scale_stats)
-        lam, status, sigma, Sigma_lambda = (
+        lam, status, sigma, Sigma_lambda, projection_error = (
             estimate_arrival_rate_from_records(
                 states=status,
                 n_time_steps=T,
@@ -1071,7 +1106,7 @@ if __name__ == "__main__":
     #print("H matrix shape:", H_matrix.shape if H_matrix is not None else "None")
 
     z,y,bid_up, bid_down, bid_rev, r_up_x, r_down_x, Mz_sol, My_sol = cooptimization(
-        lam, sigma,status, flex_state, price_bup, price_bdown, price_el, dt, n, T, H, H_matrix, p_rate, lic_path,eps, DP=DP, beta=beta
+        lam, sigma,status, flex_state, price_bup, price_bdown, price_el, dt, n, T, H, p_rate, lic_path,eps, DP=DP, beta=beta
     )
 
     print("Optimal bids computed:")

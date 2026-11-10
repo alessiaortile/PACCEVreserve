@@ -71,7 +71,7 @@ def plot_stacked_metrics(summary,colors):
         "total_daily_bid_kw": 1.0
     }
 
-    methods = summary.loc[summary["method"] != "LDP", "method"].unique()
+    methods = summary["method"].unique()#summary.loc[summary["method"] != "LDP", "method"].unique()
     
 
     for ax, (metric, ylabel) in zip(axes, metrics):
@@ -546,6 +546,7 @@ def make_plots(summary: pd.DataFrame) -> None:
         "CDP80": ["#008B8B","#e7298a"],    #blue
         "CDP90": ["#6A3D9A", "#e6ab02"],        # # purple + muted yellow
         "CDP_NoPE": ["#008B8B","#008B8B"],      # brown + neutral gray
+        "LDP": ["#e7298a","#e7298a"]
     }
 
 
@@ -578,14 +579,14 @@ def make_plots(summary: pd.DataFrame) -> None:
 
 def main():
     # --- Standard ε files ---
-    CDP60 = list(RESULTS_DIR.glob("SOC_B_bidvalidation_summary_records_eps???_100_CDP_0.6.csv"))
+    CDP60 = list(RESULTS_DIR.glob("SOC_B_bidvalidation_summary_records_eps???_100_CDP_0.6_x.csv"))
     CDP80 = list(RESULTS_DIR.glob("SOC_B_bidvalidation_summary_records_eps???_100_CDP_0.8_x.csv")) 
     CDP90= list(RESULTS_DIR.glob("SOC_B_bidvalidation_summary_records_eps???_100_CDP_0.9.csv"))
     NoPE90 = list(RESULTS_DIR.glob("SOC_B_bidvalidation_summary_records_eps???_100_CDP_NoPP.csv"))
     LDP = list(RESULTS_DIR.glob("SOC_B_bidvalidation_summary_records_eps???_100_LDP_0.9.csv"))
 
     # --- Extra files without eps ---
-    CDP60_extra = RESULTS_DIR / "SOC_B_bidvalidation_summary_records_100_0.6.csv"
+    CDP60_extra = RESULTS_DIR / "SOC_B_bidvalidation_summary_records_100_0.6_x.csv"
     CDP80_extra = RESULTS_DIR / "SOC_B_bidvalidation_summary_records_100_0.8_x.csv"
     CDP90_extra = RESULTS_DIR / "SOC_B_bidvalidation_summary_records_0.9.csv"
     NoPE90_extra = RESULTS_DIR / "SOC_B_bidvalidation_summary_records_0.9.csv" 

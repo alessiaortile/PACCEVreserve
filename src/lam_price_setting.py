@@ -631,53 +631,97 @@ def estimate_arrival_rate_from_records(
     if csv_path is None:
 
         if privacy_mechanism == "LDP":
-            csv_path = (f"data/ev_records_{n_chargers}_DP_eps{epsilon}_insample.csv")
+            csv_path = (f"data/ev_records_{n_chargers}_DP_eps{epsilon}_insample.npz")
+            print(f"Loading LDP data from {csv_path}")
         else:
             csv_path = (f"data/ev_records_{n_chargers}_insample.csv")
 
-    df = pd.read_csv(csv_path)
-    n_days = df["day"].nunique()
+    #df = pd.read_csv(csv_path)
+    #n_days = df["day"].nunique()
 
     # ------------------------------------------------------------------
     # Empirical arrival counts
     # ------------------------------------------------------------------
-    observed_arrival_rate = np.zeros(
-        (len(states), n_time_steps),
-        dtype=float,
-    )
+    if privacy_mechanism == "LDP":
+        data = np.load(csv_path)
+        n_states = len(states)
 
-    for (state_index, time_step), group in df.groupby(["state_idx", "time_step"]):
+        observed_bits_daily = data["observed_bits"]
 
-        if (state_index >= len(states) or time_step >= n_time_steps):
-            continue
+        # shape:
+        # (n_days, n_time_steps, n_states)
 
-        observed_arrival_rate[int(state_index),int(time_step),] = (
-            group.groupby("day")
-            .size()
-            .reindex(
-                df["day"].unique(),
-                fill_value=0,
-            )
-            .mean()
+        n_days = observed_bits_daily.shape[0]
+
+        print(
+            f"Loaded OUE observations with shape "
+            f"{observed_bits_daily.shape}"
         )
 
-    print(f"Arrival-rate matrix shape: {observed_arrival_rate.shape}")
+        # daily average reported counts
+        observed_bits = (
+            observed_bits_daily
+            .mean(axis=0)
+            .T
+        )
+    elif privacy_mechanism == "CDP":
+        df = pd.read_csv(csv_path)
+        n_days = df["day"].nunique()
+        observed_arrival_rate = np.zeros(
+            (len(states), n_time_steps),
+            dtype=float,
+        )
+
+        for (state_index, time_step), group in df.groupby(["state_idx", "time_step"]):
+
+            if (state_index >= len(states) or time_step >= n_time_steps):
+                continue
+
+            observed_arrival_rate[int(state_index),int(time_step),] = (
+                group.groupby("day")
+                .size()
+                .reindex(
+                    df["day"].unique(),
+                    fill_value=0,
+                )
+                .mean()
+            )
+
+        print(f"Arrival-rate matrix shape: {observed_arrival_rate.shape}")
+    else:
+        df = pd.read_csv(csv_path)
+        n_days = df["day"].nunique()
+
+        observed_arrival_rate = np.zeros(
+            (len(states), n_time_steps),
+            dtype=float,
+        )
+
+        for (state_index, time_step), group in df.groupby(["state_idx", "time_step"]):
+
+            if (state_index >= len(states) or time_step >= n_time_steps):
+                continue
+
+            observed_arrival_rate[int(state_index),int(time_step),] = (
+                group.groupby("day")
+                .size()
+                .reindex(
+                    df["day"].unique(),
+                    fill_value=0,
+                )
+                .mean()
+            )
+
+        print(f"Arrival-rate matrix shape: {observed_arrival_rate.shape}")
 
     # ------------------------------------------------------------------
     # LDP
     # ------------------------------------------------------------------
     if privacy_mechanism == "LDP":
 
-        rr_matrix = build_rr_matrix(
-            epsilon=epsilon,
-            n_states=len(states),
-        )
-
-        lambda_hat, Sigma_lambda = (
-            estimate_arrival_rate_ldp(
-                rr_matrix=rr_matrix,
-                privatized_arrival_rate=observed_arrival_rate,
-                states=states,
+        lambda_hat, Sigma_lambda, projection_error = (
+            estimate_arrival_rate_oue(
+                observed_bits=observed_bits,
                 epsilon=epsilon,
                 n_days=n_days,
             )
@@ -690,7 +734,7 @@ def estimate_arrival_rate_from_records(
             )
         )
 
-        return (lambda_hat, states, Sigma_tilde_a, Sigma_lambda,)
+        return (lambda_hat, states, Sigma_tilde_a, Sigma_lambda, projection_error)
 
     # ------------------------------------------------------------------
     # CDP
@@ -708,6 +752,166 @@ def estimate_arrival_rate_from_records(
         )
 
     return observed_arrival_rate, states
+
+def estimate_arrival_rate_oue(
+    observed_bits: np.ndarray,
+    epsilon: float,
+    n_days: int,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Estimate arrival rates from OUE reports.
+
+    Parameters
+    ----------
+    observed_bits :
+        Shape (n_states, n_time_steps).
+
+        observed_bits[i, t] contains the average number of reported
+        ones per day for OUE bit i at time step t.
+
+    epsilon :
+        OUE privacy parameter.
+
+    n_days :
+        Number of independent observation days.
+
+    Returns
+    -------
+    lambda_hat :
+        Projected OUE estimator of arrival rates.
+        Shape (n_states, n_time_steps).
+
+    covariance :
+        Covariance matrices.
+        Shape (n_time_steps, n_states, n_states).
+
+        Diagonal terms contain
+
+            arrival uncertainty
+            + OUE mechanism uncertainty
+
+        evaluated at the projected estimator.
+    """
+
+    observed_bits = np.asarray(
+        observed_bits,
+        dtype=float,
+    )
+
+    n_states, n_time_steps = observed_bits.shape
+
+    # OUE parameters
+    p = 0.5
+    q = 1.0 / (np.exp(epsilon) + 1.0)
+
+    lambda_hat = np.zeros(
+        (n_states, n_time_steps),
+        dtype=float,
+    )
+
+    covariance = np.zeros(
+        (
+            n_time_steps,
+            n_states,
+            n_states,
+        ),
+        dtype=float,
+    )
+
+    projection_error = np.zeros(
+        (n_states, n_time_steps),
+        dtype=float,
+    )
+
+    for time_index in range(n_time_steps):
+
+        # ----------------------------------------------------------
+        # OUE unbiased decoder
+        # ----------------------------------------------------------
+
+        s_bar = observed_bits[:, time_index]
+
+        N_bar = (
+            np.sum(s_bar)
+            /
+            (
+                p
+                + (n_states - 1) * q
+            )
+        )
+
+        lambda_unbiased = (
+            s_bar
+            - q * N_bar
+        ) / (p - q)
+        # ----------------------------------------------------------
+        # Projection onto feasible arrivals
+        # ----------------------------------------------------------
+
+        estimate = np.maximum(
+           lambda_unbiased,
+           0.0,
+        )
+
+        projection_error[:, time_index] = np.maximum(
+            -lambda_unbiased,
+            0.0,
+        )
+
+        lambda_hat[:, time_index] = estimate
+
+        # ----------------------------------------------------------
+        # Variance computation
+        # ----------------------------------------------------------
+
+        variance_vector = np.zeros(
+            n_states,
+            dtype=float,
+        )
+
+        for state_index in range(n_states):
+
+            lam = estimate[state_index]
+
+            # Expected OUE reporting probability
+            r = (
+                q
+                + (p - q)
+                * lam
+                / n_days
+            )
+
+            r = np.clip(
+                r,
+                1e-12,
+                1.0 - 1e-12,
+            )
+
+            # Poisson arrival variance
+            poisson_variance = (
+                lam / n_days
+            )
+
+            # OUE mechanism variance
+            mechanism_variance = (
+                n_days
+                * r
+                * (1.0 - r)
+                / (p - q) ** 2
+            )
+
+            variance_vector[state_index] = (
+                poisson_variance
+                + mechanism_variance
+            )
+
+        covariance[
+            time_index
+        ] = np.diag(
+            variance_vector
+        )
+
+    return lambda_hat, covariance, projection_error
 
 
 # ============================================================================
@@ -820,6 +1024,8 @@ def estimate_arrival_rate_cdp(
     # ------------------------------------------------------------------
     lambda_hat = np.maximum(raw_lambda,0.0)
 
+    projection_error = np.maximum(-raw_lambda,0.0)
+
     # ------------------------------------------------------------------
     # Estimator covariance
     # ------------------------------------------------------------------
@@ -853,7 +1059,7 @@ def estimate_arrival_rate_cdp(
         lambda_hat,
         states,
         Sigma_tilde_a,
-        Sigma_poisson,
+        Sigma_poisson,projection_error
     )
 
 
@@ -898,3 +1104,37 @@ def build_rr_matrix(
 
     return rr_matrix
 
+def build_oue_matrix(
+    epsilon: float,
+    n_states: int,
+) -> np.ndarray:
+    """
+    Construct the expected OUE reporting matrix.
+
+    H[i,j] = P(bit i is reported as 1 | true state = j)
+
+    Parameters
+    ----------
+    epsilon : float
+        LDP privacy parameter.
+    n_states : int
+        Number of states K.
+
+    Returns
+    -------
+    np.ndarray
+        K x K OUE expectation matrix.
+    """
+    if epsilon < 0:
+        raise ValueError("epsilon must be non-negative.")
+
+    if n_states <= 0:
+        raise ValueError("n_states must be positive.")
+
+    p = 0.5
+    q = 1.0 / (np.exp(epsilon) + 1.0)
+
+    H = np.full((n_states, n_states), q)
+    np.fill_diagonal(H, p)
+
+    return H

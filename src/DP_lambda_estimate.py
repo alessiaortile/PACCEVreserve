@@ -122,7 +122,7 @@ def run_inference(args: argparse.Namespace) -> dict:
 
     print("Inferring privatized arrival rates...")
 
-    lambda_private, status, sigma, covariance = (
+    lambda_private, status, sigma, covariance, projection_error = (
         lps.estimate_arrival_rate_from_records(
             states=status,
             n_time_steps=n_time_steps,
@@ -157,6 +157,7 @@ def run_inference(args: argparse.Namespace) -> dict:
             "charging_power_kw": args.p_rate,
             "scale": args.scale,
             "sigma": np.asarray(sigma).tolist(),
+            "projection_error": np.asarray(projection_error).tolist(),
             "Sigma_lambda": np.asarray(covariance).tolist(),
             "status": np.asarray(status).tolist(),
         },
