@@ -37,6 +37,11 @@ def load_summary(path: Path, method: str) -> dict[str, float]:
         "empirical_feasibility": float(df["p90_success_rate"].mean()),#float(feas.mean()),
         "empirical_feasibility_std": float(df["p90_success_rate_std"].mean()),#float(feas.std(ddof=1)),
 
+        "empirical_hour_prob": df["empirical_feasibility"],
+        #"empirical_hour_prob_std": df["empirical_hour_prob_std"],
+        "empirical_hour_prob_ci_low": df["empirical_hour_prob_ci_low"] if "empirical_hour_prob_ci_low" in df.columns else np.zeros(24),
+        "empirical_hour_prob_ci_high": df["empirical_hour_prob_ci_high"] if "empirical_hour_prob_ci_high" in df.columns else np.zeros(24),
+
         # Other metrics
         "total_bid_kw": float((df["bid_up"] + df["bid_down"]).sum() / 1000.0),
 
@@ -178,6 +183,210 @@ def plot_stacked_metrics(summary,colors):
     )
     fig.savefig(
         OUTPUT_DIR / "stacked_metrics.png",
+        dpi=300,
+        bbox_inches="tight"
+    )
+
+    plt.close(fig)
+
+def plot_hourly_success_panels(df,method):
+    """
+    One panel per epsilon.
+    X-axis: hour
+    Y-axis: success probability [%]
+    """
+    
+    subset = (
+        df[df["method"] == method]
+        .sort_values("eps", ascending=False)
+    )
+
+    eps_values = sorted(
+        subset["eps"].unique(),
+        reverse=True
+    )
+
+    n_eps = len(eps_values)
+
+    ncols = 3
+    nrows = int(np.ceil(n_eps / ncols))
+
+    fig, axes = plt.subplots(
+        nrows,
+        ncols,
+        figsize=(4*ncols, 2.8*nrows),
+        sharex=True,
+        sharey=True
+    )
+
+    axes = np.atleast_1d(axes).flatten()
+
+    color_map = {
+        "CDP90": "#6A3D9A",
+        "LDP": "#e7298a",
+        "CDP_NoPE": "#008B8B",
+    }
+
+    for ax, eps in zip(axes, eps_values):
+
+        eps_df = subset[subset["eps"] == eps]
+
+        eps_df = eps_df.sort_values("hour")
+
+        success = 100 * eps_df["empirical_hour_prob"].to_numpy()
+
+        ci_low = (
+            100
+            * eps_df["empirical_hour_prob_ci_low"].to_numpy()
+        )
+
+        ci_high = (
+            100
+            * eps_df["empirical_hour_prob_ci_high"].to_numpy()
+        )
+
+        hours = eps_df["hour"].to_numpy()
+
+        ax.plot(
+            hours,
+            success,
+            lw=2,
+            color=color_map[method]
+        )
+
+        ax.fill_between(
+            hours,
+            ci_low,
+            ci_high,
+            color=color_map[method],
+            alpha=0.20
+        )
+
+        title = (
+            "No privacy"
+            if eps >= 11
+            else rf"$\epsilon={eps}$"
+        )
+
+        ax.set_title(title)
+        ax.grid(True, alpha=0.3)
+
+        ax.axhline(y=90, color="red", lw=1, ls="--", alpha=0.8)
+        ax.set_xticks(range(0, 24, 1))
+
+    for ax in axes[n_eps:]:
+        ax.set_visible(False)
+
+    fig.supxlabel("Hour")
+    fig.supylabel("Success probability [%]")
+
+    plt.tight_layout()
+
+    fig.savefig(
+        OUTPUT_DIR / f"hourly_success_{method}.pdf",
+        bbox_inches="tight"
+    )
+
+    fig.savefig(
+        OUTPUT_DIR / f"hourly_success_{method}.png",
+        dpi=300,
+        bbox_inches="tight"
+    )
+
+    plt.close(fig)
+
+def plot_hourly_success_curves(hourly_df, method):
+
+    subset = hourly_df[hourly_df["method"] == method]
+
+    eps_values = sorted(
+        subset["eps"].unique(),
+        reverse=True
+    )
+
+    fig, ax = plt.subplots(
+        figsize=(7, 4)
+    )
+
+    cmap = plt.cm.viridis(
+        np.linspace(0, 1, len(eps_values))
+    )
+
+    for color, eps in zip(cmap, eps_values):
+
+        eps_df = (
+            subset[subset["eps"] == eps]
+            .sort_values("hour")
+        )
+
+        x = eps_df["hour"].to_numpy()
+
+        y = (
+            100
+            * eps_df["empirical_hour_prob"].to_numpy()
+        )
+
+        ci_low = (
+            100
+            * eps_df["empirical_hour_prob_ci_low"].to_numpy()
+        )
+
+        ci_high = (
+            100
+            * eps_df["empirical_hour_prob_ci_high"].to_numpy()
+        )
+
+        label = (
+            "No privacy"
+            if eps >= 11
+            else rf"$\epsilon={eps}$"
+        )
+
+        ax.plot(
+            x,
+            y,
+            linewidth=2,
+            color=color,
+            label=label
+        )
+
+        ax.fill_between(
+            x,
+            ci_low,
+            ci_high,
+            color=color,
+            alpha=0.15
+        )
+
+    ax.set_xlabel("Hour")
+    ax.set_ylabel("Success probability [%]")
+
+    ax.set_ylim(0, 105)
+
+    ax.set_xticks(range(0, 24, 1))
+    ax.axhline(y=90, color="red", lw=1, ls="--", alpha=0.8)
+    ax.set_yticks(np.arange(0, 101, 5))
+
+    ax.grid(
+        True,
+        linestyle="--",
+        alpha=0.3
+    )
+
+    ax.legend(
+        ncol=2,
+        fontsize=9
+    )
+
+    plt.tight_layout()
+
+    fig.savefig(
+        OUTPUT_DIR / f"hourly_success_{method}_C.pdf",
+        bbox_inches="tight"
+    )
+
+    fig.savefig(
+        OUTPUT_DIR / f"hourly_success_{method}_c.png",
         dpi=300,
         bbox_inches="tight"
     )
@@ -549,6 +758,36 @@ def make_plots(summary: pd.DataFrame) -> None:
         "LDP": ["#e7298a","#e7298a"]
     }
 
+    hourly_rows = []
+
+    for _, row in summary.iterrows():
+
+        probs = np.asarray(row["empirical_hour_prob"])
+        ci_low = np.asarray(row["empirical_hour_prob_ci_low"])
+        ci_high = np.asarray(row["empirical_hour_prob_ci_high"])
+
+        for hour in range(len(probs)):
+
+            hourly_rows.append({
+                "eps": row["eps"],
+                "method": row["method"],
+                "hour": hour,
+                "empirical_hour_prob": probs[hour],
+                "empirical_hour_prob_ci_low": ci_low[hour],
+                "empirical_hour_prob_ci_high": ci_high[hour],
+            })
+
+    hourly_df = pd.DataFrame(hourly_rows)
+
+    for method in ["CDP90", "LDP", "CDP_NoPE"]:
+        plot_hourly_success_panels(
+            hourly_df,
+            method
+        )
+        plot_hourly_success_curves(
+            hourly_df,
+            method
+        )
 
     methods = summary["method"].unique()
     plot_stacked_metrics(summary,colors)

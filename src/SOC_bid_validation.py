@@ -618,6 +618,21 @@ def validate_bids(parsed: ParsedPolicyOutput, samples: int, seed: int, dt: float
         empirical_hour_prob * (1 - empirical_hour_prob) / np.maximum(per_hour_total, 1)
     )   
 
+    z = 1.96
+
+    empirical_hour_prob_ci_low = np.maximum(
+        0.0,
+        empirical_hour_prob
+        - z * empirical_hour_prob_std
+    )
+
+    empirical_hour_prob_ci_high = np.minimum(
+        1.0,
+        empirical_hour_prob
+        + z * empirical_hour_prob_std
+    )
+
+
     return {
         "p90_success_rate": p_hat,
         "p90_success_rate_std": p_hat_std,
@@ -627,6 +642,10 @@ def validate_bids(parsed: ParsedPolicyOutput, samples: int, seed: int, dt: float
         # Per-hour stats
         "empirical_hour_prob": empirical_hour_prob,
         "empirical_hour_prob_std": empirical_hour_prob_std,
+
+        "empirical_hour_prob_ci_low": empirical_hour_prob_ci_low,
+        "empirical_hour_prob_ci_high": empirical_hour_prob_ci_high,
+
 
         # Conservative test (too strong but useful)
         "empirical_overall_prob": overall_success / float(samples),
@@ -710,14 +729,15 @@ def main() -> int:
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
     with args.output.open("w", encoding="utf-8") as f:
-        f.write("hour,bid_up,bid_down,objective_value,reliability,empirical_feasibility,min_margin,net_profit_mean,net_profit_std,net_profit_for_EV_mean,net_profit_for_EV_std,p90_success_rate,p90_success_rate_std\n")         
+        f.write("hour,bid_up,bid_down,objective_value,reliability,empirical_feasibility,min_margin,net_profit_mean,net_profit_std,net_profit_for_EV_mean,net_profit_for_EV_std,p90_success_rate,p90_success_rate_std,empirical_hour_prob_ci_low,empirical_hour_prob_ci_high\n")         
         for h in range(hour_count):
             f.write(
                 f"{h},{parsed.bid_up[h]:.6f},{parsed.bid_down[h]:.6f},{parsed.objective_value},"
                 f"{parsed.reliability},{result['empirical_hour_prob'][h]:.6f},{result['per_hour_min_margin'][h]:.6f},"
                 f"{result['net_profit_mean']:.6f},{result['net_profit_std']:.6f},"
                 f"{result['net_profit_for_EV_mean']:.6f},{result['net_profit_for_EV_std']:.6f},"
-                f"{result['p90_success_rate']},{result['p90_success_rate_std']}\n"
+                f"{result['p90_success_rate']},{result['p90_success_rate_std']},"
+                f"{result['empirical_hour_prob_ci_low'][h]:.6f},{result['empirical_hour_prob_ci_high'][h]:.6f}\n"
             )
     
     # Save full distributions separately
