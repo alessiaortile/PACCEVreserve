@@ -8,7 +8,7 @@ import pickle
 import gurobipy as gp
 from gurobipy import GRB
 from pathlib import Path
-from lam_price_setting import estimate_arrival_rate_from_records, load_ev_model_parameters, read_daily_prices
+from lam_price_setting import estimate_arrival_rate_from_records, load_ev_model_parameters, read_daily_prices, build_rr_matrix
 from dataclasses import dataclass
 from typing import Dict, List, Tuple
 
@@ -292,8 +292,147 @@ def arrival_bias_propagation(status,T,lam,z,y,eps,next_charge,next_slack,
 
     return bid_up, bid_down
 
+
+def ldp_bias_bound(lam_t, H_inv, H, n_days, z_margin=0.0):
+    """
+    Per-state bound on |bias| of the nonnegative GLS estimator under LDP (RR),
+    Gaussian approximation, for a single time step.
+
+    lam_t : (K,) estimated arrival rates at time t (plug-in)
+    Returns (K,) vector with |b_x| <= sqrt(Sigma_hat_xx) * min(B_gauss, sqrt(K)).
+    """
+    K = len(lam_t)
+
+    # GLS covariance: (H' Sigma^-1 H)^-1 = H^-1 diag(H lam / D) H^-T  (H square, invertible)
+    d = np.maximum(H @ lam_t, 1e-12) / n_days
+    Sigma_hat = (H_inv * d) @ H_inv.T
+    sig = np.sqrt(np.maximum(np.diag(Sigma_hat), 1e-24))
+
+    # Conservative plug-in: m_y is decreasing in lambda, so use a lower value
+    lam_c = np.maximum(lam_t - z_margin * sig, 0.0)
+
+    # m_y = E[(-lambda_u,y)_+^2] for lambda_u,y ~ N(lam, sig^2)
+    r = lam_c / sig
+    m = (sig**2 + lam_c**2) * norm.cdf(-r) - lam_c * sig * norm.pdf(r)
+    m = np.maximum(m, 0.0)
+
+    # Q-norm bound ||b||_Q <= sqrt(lambda_max(Q) * sum_y m_y), lambda_max(Q) = 1/lambda_min(Sigma_hat)
+    lam_min = max(np.linalg.eigvalsh(Sigma_hat)[0], 1e-12)
+    B_gauss = np.sqrt(m.sum() / lam_min)
+
+    # Distribution-free bound ||b||_Q <= sqrt(K); take the tighter of the two
+    B_q = min(B_gauss, np.sqrt(K))
+
+    # Component-wise (Cauchy-Schwarz in the Q-metric): |b_x| <= sqrt(Sigma_xx) * ||b||_Q
+    return sig * B_q
+
+
+def arrival_bias_propagation_ldp(status, T, lam, z, y, eps, next_charge, next_slack,
+                                 flex_state, p_rate, r_up_x, r_down_x, kappa_h,
+                                 tau_up, tau_down, T_h, H, H_matrix,
+                                 price_up, price_down,
+                                 n_days=60, z_margin=0.0):
+    """
+    Estimate LDP arrival-induced reserve bias (nonnegative GLS under randomized
+    response) and optimize bias-adjusted bids.
+
+    lam : (n_states, T) estimated arrival rates
+    H   : (n_states, n_states) randomized-response matrix (eps enters through H;
+          the eps argument is kept only for signature compatibility)
+
+    Returns
+    -------
+    tuple[np.ndarray, np.ndarray]
+        Bias-adjusted upward and downward reserve bids.
+    """
+    n_states = len(status)
+    lam = np.asarray(lam, dtype=float)
+
+    # --- charging policy u[i,t] = z/(z+y), as before ---
+    u = np.zeros((n_states, T), dtype=float)
+    for i in range(n_states):
+        denom = y[i, :] + z[i, :]
+        ratio = np.zeros_like(denom, dtype=float)
+        valid = denom > 0
+        ratio[valid] = z[i, valid] / denom[valid]
+        ratio[ratio <= 0] = 0
+        u[i, :] = ratio
+
+        if status[i][0] > 0 and status[i][1] == 0:
+            u[i, :] = 1.0
+        elif status[i][0] == 0:
+            u[i, :] = 0.0
+    u = np.clip(u, 0.0, 1.0)
+
+    # --- per-state, per-time LDP bias bound (magnitude) ---
+    H_inv = np.linalg.inv(H_matrix)
+    b_hat = np.zeros((n_states, T))
+    for t in range(T):
+        b_hat[:, t] = ldp_bias_bound(lam[:, t], H_inv, H_matrix, n_days, z_margin)
+
+    # --- propagate bias magnitudes through the population dynamics ---
+    # The transition matrix is nonnegative, so |B b| <= B |b| and the propagated
+    # magnitude is a valid bound on the propagated bias.
+    z_bar = np.zeros((n_states, T))
+    y_bar = np.zeros((n_states, T))
+    n_current = b_hat[:, 0].copy()
+
+    for t in range(T):
+        u_t = u[:, t]
+        z_bar[:, t] = u_t * n_current
+        y_bar[:, t] = (1.0 - u_t) * n_current
+
+        if t < T - 1:
+            B = np.zeros((n_states, n_states), dtype=float)
+            for i, (charge, slack) in enumerate(status):
+                for j in next_charge.get((charge, slack), []):
+                    B[i, j] = u_t[j]
+                for j in next_slack.get((charge, slack), []):
+                    B[i, j] = 1.0 - u_t[j]
+            n_current = B @ n_current + b_hat[:, t + 1]
+
+    flex = list(flex_state)
+    r_up_bias = z_bar[flex, :].sum(axis=0) * p_rate
+    r_down_bias = y_bar[flex, :].sum(axis=0) * p_rate
+
+    # --- bias-adjusted reserve capacities ---
+    tot_reserve_up = np.array([
+        max(r_up_x[t] - r_up_bias[t]
+            - p_rate * kappa_h[int(t * dt)] * tau_up[int(t * dt), t, "up"], 0.0)
+        for t in range(T)
+    ])
+    tot_reserve_down = np.array([
+        max(r_down_x[t] - r_down_bias[t]
+            - p_rate * kappa_h[int(t * dt)] * tau_down[int(t * dt), t, "down"], 0.0)
+        for t in range(T)
+    ])
+
+    # Recompute optimal bid using the bias-adjusted reserve capacities
+    m = gp.Model()
+    bidu = m.addVars(H, lb=0)
+    bidd = m.addVars(H, lb=0)
+
+    tot_reserve_up = np.array([r_up_x[t] - r_up_bias[t] - p_rate * kappa_h[int(t*dt)] * tau_up[int(t*dt), t, "up"] if r_up_x[t] - r_up_bias[t] - p_rate * kappa_h[int(t*dt)] * tau_up[int(t*dt), t, "up"]  > 0 else 0 for t in range(T)]) 
+    tot_reserve_down = np.array([r_down_x[t] - r_down_bias[t]  - p_rate * kappa_h[int(t*dt)] * tau_down[int(t*dt), t, "down"] if r_down_x[t] - r_down_bias[t]  - p_rate * kappa_h[int(t*dt)] * tau_down[int(t*dt), t, "down"] > 0 else 0 for t in range(T)])
+
+    m.addConstrs(bidu[h] + bidd[h]*0.2 <= tot_reserve_up[t]  for h in range(H) for t in T_h[h])
+    m.addConstrs(bidd[h] <= tot_reserve_down[t]  for h in range(H) for t in T_h[h])
+
+    objective = gp.quicksum(
+        price_up[h] * bidu[h] + price_down[h] * bidd[h] for h in range(H)
+    )
+
+    m.setObjective(objective, GRB.MAXIMIZE)
+    m.optimize()
+
+    new_bid_up = np.array([bidu[h].X for h in range(H)])
+    new_bid_down = np.array([bidd[h].X for h in range(H)])
+    bid_up = new_bid_up
+    bid_down = new_bid_down
+    return bid_up, bid_down
+
 def cooptimization(lam,sigma, status, flex_state, price_up, price_down, real_price,
-                    dt, n, T, H, p_rate, lic_path,eps,DP, beta=0.1):
+                    dt, n, T, H,H_matrix, p_rate, lic_path,eps,DP, beta=0.1):
     """
     Solve the robust EV charging and reserve co-optimization problem.
 
@@ -670,6 +809,9 @@ def cooptimization(lam,sigma, status, flex_state, price_up, price_down, real_pri
     if DP == "CDP":
         bid_up, bid_down = arrival_bias_propagation(status,T,lam,z,y,eps,next_charge,next_slack,
             flex_state,p_rate,r_up_x,r_down_x,kappa_h,tau_up,tau_down,T_h,H,price_up,price_down)
+    #elif DP == "LDP":
+    #    bid_up, bid_down = arrival_bias_propagation_ldp(status,T,lam,z,y,eps,next_charge,next_slack,
+    #        flex_state,p_rate,r_up_x,r_down_x,kappa_h,tau_up,tau_down,T_h,H,H_matrix,price_up,price_down)
 
     return z, y, bid_up, bid_down, bid_rev, r_up_x, r_down_x, Mz_sol, My_sol
 
@@ -806,6 +948,7 @@ if __name__ == "__main__":
     price_bup = fcrd_down_matrix.mean(axis=0)
     price_bdown = fcrd_up_matrix.mean(axis=0)
 
+    H_matrix = None
 
     if DP == "LDP":
         print("Loading lambda inference results...")
@@ -822,6 +965,8 @@ if __name__ == "__main__":
             real_lam = np.array(data["results"]["lambda_real"])
             sigma = data["metadata"]["sigma"]
             status = [tuple(s) for s in data["metadata"]["status"]]
+
+            H_matrix = build_rr_matrix(eps, len(status))
 
             error_log(lam, real_lam, sigma, status, T)
 
@@ -861,6 +1006,8 @@ if __name__ == "__main__":
                     "status": np.array(status).tolist(),
                 }
             }
+
+            H_matrix = build_rr_matrix(eps, len(status))
 
             filename = f"data/lambda_inference_{dt:.2f}_{eps}_{H}_{int(scale_stats)}.pkl"
             with open(filename, "wb") as f:
@@ -921,8 +1068,10 @@ if __name__ == "__main__":
     flex_state = [i for i, (charge, slack) in enumerate(status) if charge > 0 and slack > 0]
     beta = 0.1 
 
+    #print("H matrix shape:", H_matrix.shape if H_matrix is not None else "None")
+
     z,y,bid_up, bid_down, bid_rev, r_up_x, r_down_x, Mz_sol, My_sol = cooptimization(
-        lam, sigma,status, flex_state, price_bup, price_bdown, price_el, dt, n, T, H, p_rate, lic_path,eps, DP=DP, beta=beta
+        lam, sigma,status, flex_state, price_bup, price_bdown, price_el, dt, n, T, H, H_matrix, p_rate, lic_path,eps, DP=DP, beta=beta
     )
 
     print("Optimal bids computed:")

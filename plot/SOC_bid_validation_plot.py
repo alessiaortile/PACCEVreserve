@@ -168,7 +168,8 @@ def plot_stacked_metrics(summary,colors):
             letter,
             transform=ax.transAxes,
             va="top",
-            fontweight="bold"
+            fontweight="bold",
+            fontsize=14
         )
 
     fig.savefig(
@@ -247,7 +248,8 @@ def plot_error_calibration(
         "(a)",
         transform=ax1.transAxes,
         va="top",
-        fontweight="bold"
+        fontweight="bold",
+        fontsize=14
     )
 
     ax1.grid(
@@ -289,7 +291,8 @@ def plot_error_calibration(
         "(b)",
         transform=ax2.transAxes,
         va="top",
-        fontweight="bold"
+        fontweight="bold",
+        fontsize=14
     )
 
     ax2.grid(
@@ -334,7 +337,8 @@ def plot_error_calibration(
         "(c)",
         transform=ax3.transAxes,
         va="top",
-        fontweight="bold"
+        fontweight="bold",
+        fontsize=14
     )
 
     ax3.grid(
@@ -473,6 +477,7 @@ def plot_error_calibration(
         "(d)",
         transform=ax4.transAxes,
         va="top",
+        fontsize=14,
         fontweight="bold"
     )
 
