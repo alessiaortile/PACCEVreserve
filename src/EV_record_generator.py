@@ -276,6 +276,7 @@ def split_records_by_day(
         raise ValueError("The dataframe must contain a 'day' column.")
 
     available_days = np.sort(df["day"].unique())
+    print(f"Available days: {available_days}")
     rng = np.random.default_rng(seed)
     shuffled_days = rng.permutation(available_days)
 
@@ -555,8 +556,6 @@ def main() -> int:
         insample.to_csv(insample_output, index=False)
         outsample.to_csv(oos_output, index=False)
 
-    print(f"Generated {len(insample)} in-sample records.")
-    print(f"Generated {len(outsample)} out-of-sample records.")
     print(f"Saved in-sample data to: {insample_output}")
     print(f"Saved out-of-sample data to: {oos_output}")
     print(

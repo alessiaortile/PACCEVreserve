@@ -631,7 +631,7 @@ def estimate_arrival_rate_from_records(
     if csv_path is None:
 
         if privacy_mechanism == "LDP":
-            csv_path = (f"data/ev_records_{n_chargers}_DP_eps{epsilon}_insample.npz")
+            csv_path = (f"data/seed{seed}/ev_records_{n_chargers}_DP_eps{epsilon}_insample.npz")
             print(f"Loading LDP data from {csv_path}")
         else:
             csv_path = (f"data/ev_records_{n_chargers}_insample.csv")
@@ -661,7 +661,7 @@ def estimate_arrival_rate_from_records(
         # daily average reported counts
         observed_bits = (
             observed_bits_daily
-            .mean(axis=0)
+            #.mean(axis=0)
             .T
         )
     elif privacy_mechanism == "CDP":
@@ -829,10 +829,10 @@ def estimate_arrival_rate_oue(
         # OUE unbiased decoder
         # ----------------------------------------------------------
 
-        s_bar = observed_bits[:, time_index]
+        s = observed_bits[:, time_index]
 
-        N_bar = (
-            np.sum(s_bar)
+        N_hat = (
+            np.sum(s)
             /
             (
                 p
@@ -840,13 +840,15 @@ def estimate_arrival_rate_oue(
             )
         )
 
-        lambda_unbiased = (
-            s_bar
-            - q * N_bar
+        c_hat_unbiased = (
+            s
+            - q * N_hat
         ) / (p - q)
         # ----------------------------------------------------------
         # Projection onto feasible arrivals
         # ----------------------------------------------------------
+        
+        lambda_unbiased[:, time_index] = c_hat_unbiased / n_days
 
         estimate = np.maximum(
            lambda_unbiased,
@@ -868,41 +870,32 @@ def estimate_arrival_rate_oue(
             n_states,
             dtype=float,
         )
+        c_hat = np.maximum(c_hat_unbiased, 0.0)
 
         for state_index in range(n_states):
 
-            lam = estimate[state_index]
+            c_hat_i = c_hat[state_index]
 
-            # Expected OUE reporting probability
-            r = (
-                q
-                + (p - q)
-                * lam
-                / n_days
+            var_count = (
+                N_hat * q * (1.0 - q)
+                / (p - q) ** 2
+                +
+                c_hat_i
+                * (1.0 - p - q)
+                / (p - q)
             )
 
-            r = np.clip(
-                r,
-                1e-12,
-                1.0 - 1e-12,
-            )
 
             # Poisson arrival variance
             poisson_variance = (
                 lam / n_days
             )
 
-            # OUE mechanism variance
-            mechanism_variance = (
-                n_days
-                * r
-                * (1.0 - r)
-                / (p - q) ** 2
-            )
+            var_rate = var_count / n_days**2
 
             variance_vector[state_index] = (
                 poisson_variance
-                + mechanism_variance
+                + var_rate
             )
 
         covariance[

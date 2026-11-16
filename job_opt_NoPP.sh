@@ -27,29 +27,48 @@ module load gurobipy/gurobi-12.0.1-python-3.11.9
 
 ## NO Privacy propagation
 
-python -u src/SOC_deviation_model.py --scale 100 --eps 10 --DP CDP
-python -u src/SOC_bid_validation.py --records data/ev_records_100_oos.csv --input results/SOC_B_policy_results_DP_eps10.0_100_CDP_NoPP.pkl --output results/SOC_B_bidvalidation_summary_records_eps10._100_CDP_NoPP.csv
+## B simulations ##
+set -e
 
-python3 -u src/SOC_deviation_model.py --scale 100 --eps 8 --DP CDP 
-python3 -u src/SOC_bid_validation.py --records data/ev_records_100_oos.csv --input results/SOC_B_policy_results_DP_eps8.0_100_CDP_NoPP.pkl --output results/SOC_B_bidvalidation_summary_records_eps8.0_100_CDP_NoPP.csv
+SEEDS=(1042 1043 1044 1045 1046)
+EPS_LIST=(8.0 4.0 2.0 1.0 0.5)
 
-python -u src/SOC_deviation_model.py --scale 100 --eps 5 --DP CDP
-python -u src/SOC_bid_validation.py --records data/ev_records_100_oos.csv --input results/SOC_B_policy_results_DP_eps5.0_100_CDP_NoPP.pkl --output results/SOC_B_bidvalidation_summary_records_eps5.0_100_CDP_NoPP.csv
+for SEED in "${SEEDS[@]}"; do
+    OUTDIR="results/seed${SEED}"
+    mkdir -p "$OUTDIR"
 
-python -u src/SOC_deviation_model.py --scale 100 --eps 4 --DP CDP
-python -u src/SOC_bid_validation.py --records data/ev_records_100_oos.csv --input results/SOC_B_policy_results_DP_eps4.0_100_CDP_NoPP.pkl --output results/SOC_B_bidvalidation_summary_records_eps4.0_100_CDP_NoPP.csv
+    for EPS in "${EPS_LIST[@]}"; do
+        echo "=== seed ${SEED}, eps ${EPS} ==="
 
-python -u src/SOC_deviation_model.py --scale 100 --eps 3 --DP CDP
-python -u src/SOC_bid_validation.py --records data/ev_records_100_oos.csv --input results/SOC_B_policy_results_DP_eps3.0_100_CDP_NoPP.pkl --output results/SOC_B_bidvalidation_summary_records_eps3.0_100_CDP_NoPP.csv
+        python -u src/SOC_deviation_model_NoPP.py --scale 100 --eps ${EPS} --DP CDP --seed ${SEED}
+        python -u src/SOC_bid_validation.py --records data/ev_records_100_oos.csv --input results/seed${SEED}/SOC_B_policy_results_DP_eps${EPS}_100_CDP_NoPP_0.9.pkl --output results/seed${SEED}/SOC_B_bidvalidation_summary_records_eps${EPS}_100_CDP_NoPP_0.9.csv
+    done
+done
 
-python -u src/SOC_deviation_model.py --scale 100 --eps 2 --DP CDP
-python -u src/SOC_bid_validation.py --records data/ev_records_100_oos.csv --input results/SOC_B_policy_results_DP_eps2.0_100_CDP_NoPP.pkl --output results/SOC_B_bidvalidation_summary_records_eps2.0_100_CDP_NoPP.csv
 
-python -u src/SOC_deviation_model.py --scale 100 --eps 1 --DP CDP
-python -u src/SOC_bid_validation.py --records data/ev_records_100_oos.csv --input results/SOC_B_policy_results_DP_eps1.0_100_CDP_NoPP.pkl --output results/SOC_B_bidvalidation_summary_records_eps1.0_100_CDP_NoPP.csv
+#python -u src/SOC_deviation_model_NoPP.py --scale 100 --eps 10 --DP CDP
+#python -u src/SOC_bid_validation.py --input results/SOC_B_policy_results_DP_eps10.0_100_CDP_NoPP.pkl --output results/SOC_B_bidvalidation_summary_records_eps10._100_CDP_NoPP.csv
 
-python -u src/SOC_deviation_model.py --scale 100 --eps 0.5 --DP CDP
-python -u src/SOC_bid_validation.py --records data/ev_records_100_oos.csv --input results/SOC_B_policy_results_DP_eps0.5_100_CDP_NoPP.pkl --output results/SOC_B_bidvalidation_summary_records_eps0.5_100_CDP_NoPP.csv
+#python3 -u src/SOC_deviation_model_NoPP.py --scale 100 --eps 8 --DP CDP 
+# python3 -u src/SOC_bid_validation.py --input results/SOC_B_policy_results_DP_eps8.0_100_CDP_NoPP.pkl --output results/SOC_B_bidvalidation_summary_records_eps8.0_100_CDP_NoPP.csv
 
-python -u src/SOC_deviation_model.py --scale 100 --eps 0.1 --DP CDP
-python -u src/SOC_bid_validation.py --records data/ev_records_100_oos.csv --input results/SOC_B_policy_results_DP_eps0.1_100_CDP_NoPP.pkl --output results/SOC_B_bidvalidation_summary_records_eps0.1_100_CDP_NoPP.csv
+# #python -u src/SOC_deviation_model_NoPP.py --scale 100 --eps 5 --DP CDP
+# python -u src/SOC_bid_validation.py --input results/SOC_B_policy_results_DP_eps5.0_100_CDP_NoPP.pkl --output results/SOC_B_bidvalidation_summary_records_eps5.0_100_CDP_NoPP.csv
+
+# #python -u src/SOC_deviation_model_NoPP.py --scale 100 --eps 4 --DP CDP
+# python -u src/SOC_bid_validation.py --input results/SOC_B_policy_results_DP_eps4.0_100_CDP_NoPP.pkl --output results/SOC_B_bidvalidation_summary_records_eps4.0_100_CDP_NoPP.csv
+
+# #python -u src/SOC_deviation_model_NoPP.py --scale 100 --eps 3 --DP CDP
+# python -u src/SOC_bid_validation.py --input results/SOC_B_policy_results_DP_eps3.0_100_CDP_NoPP.pkl --output results/SOC_B_bidvalidation_summary_records_eps3.0_100_CDP_NoPP.csv
+
+# #python -u src/SOC_deviation_model_NoPP.py --scale 100 --eps 2 --DP CDP
+# python -u src/SOC_bid_validation.py --input results/SOC_B_policy_results_DP_eps2.0_100_CDP_NoPP.pkl --output results/SOC_B_bidvalidation_summary_records_eps2.0_100_CDP_NoPP.csv
+
+# #python -u src/SOC_deviation_model_NoPP.py --scale 100 --eps 1 --DP CDP
+# python -u src/SOC_bid_validation.py --input results/SOC_B_policy_results_DP_eps1.0_100_CDP_NoPP.pkl --output results/SOC_B_bidvalidation_summary_records_eps1.0_100_CDP_NoPP.csv
+
+# #python -u src/SOC_deviation_model_NoPP.py --scale 100 --eps 0.5 --DP CDP
+# python -u src/SOC_bid_validation.py --input results/SOC_B_policy_results_DP_eps0.5_100_CDP_NoPP.pkl --output results/SOC_B_bidvalidation_summary_records_eps0.5_100_CDP_NoPP.csv
+
+# #python -u src/SOC_deviation_model_NoPP.py --scale 100 --eps 0.1 --DP CDP
+# python -u src/SOC_bid_validation.py --input results/SOC_B_policy_results_DP_eps0.1_100_CDP_NoPP.pkl --output results/SOC_B_bidvalidation_summary_records_eps0.1_100_CDP_NoPP.csv

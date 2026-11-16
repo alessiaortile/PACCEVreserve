@@ -67,6 +67,12 @@ def parse_arguments() -> argparse.Namespace:
         default=None,
         help="Optional output pickle path.",
     )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=0,
+        help="Random seed for reproducibility.",
+    )
 
     return parser.parse_args()
 
@@ -130,6 +136,7 @@ def run_inference(args: argparse.Namespace) -> dict:
             n_chargers=args.scale,
             privacy_mechanism="LDP",
             epsilon=args.eps,
+            seed=args.seed
         )
     )
 
@@ -143,6 +150,8 @@ def run_inference(args: argparse.Namespace) -> dict:
             privacy_mechanism=None,
         )
     )
+
+    print("projection_error:", projection_error)
 
     return {
         "results": {

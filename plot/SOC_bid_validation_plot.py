@@ -77,35 +77,80 @@ def plot_stacked_metrics(summary,colors):
     }
 
     methods = summary["method"].unique()#summary.loc[summary["method"] != "LDP", "method"].unique()
-    
+    methods = summary.loc[summary["method"] != "Oracle", "method"].unique()
+    markers = {
+        "CDP60": "o",
+        "CDP90": "s",
+        "CDP90nB": "D",
+        "CDP_NoPE": ".",
+        "LDP": "^",
+        "LDPnB": "*",
+        "Oracle": "v"
+    }
+
+    labels = {
+        "CDP60": "CDP P60",
+        "CDP90": "CDP P90",
+        "CDP90nB": "CDP P90 no Bias",
+        "CDP_NoPE": "NoPE P90",
+        "LDP": "LDP P90",
+        "LDPnB": "LDP P90 no Bias",
+        "Oracle": "Oracle"
+    }
+
+    eps_vals = sorted(summary["eps"].unique())
+    eps_vals = [eps for eps in eps_vals if eps <= 10] 
+    print("Epsilon values for plotting:", eps_vals)
+    eps_to_x = {eps: i for i, eps in enumerate(eps_vals)}
 
     for ax, (metric, ylabel) in zip(axes, metrics):
+        oracle_method = "Oracle"   # or whatever your oracle is called
+        reference_method = "CDP90"
+
+        oracle_lines = {}
+        reference_lines = {}
+
+        for metric, _ in metrics:
+
+            oracle_row = summary[
+                (summary["method"] == oracle_method)
+                & (summary["eps"] == 12)
+            ]
+
+            if not oracle_row.empty:
+                oracle_lines[metric] = (
+                    oracle_row.iloc[0][metric]
+                    * multipliers[metric]
+                )
+
+            reference_row = summary[
+                (summary["method"] == reference_method)
+                & (summary["eps"] == 12)
+            ]
+
+            if not reference_row.empty:
+                reference_lines[metric] = (
+                    reference_row.iloc[0][metric]
+                    * multipliers[metric]
+                )
+
 
         for method in methods:
 
             subset = (
-                summary[summary["method"] == method]
+                summary[(summary["method"] == method)  & 
+                summary["eps"].isin(eps_vals)]
                 .sort_values("eps")
             )
 
             color = colors[method]
 
-            marker = (
-                "o" if method == "CDP60"
-                else "s" if method == "CDP90"
-                else "D" 
-            )
+            marker = markers[method]
 
-            x = range(len(subset))
+            x = [eps_to_x[e] for e in subset["eps"]]
             yval = subset[metric].to_numpy() * multipliers[metric]
 
-            label = (
-                "CDP P60" if method == "CDP60"
-                else "CDP P80" if method == "CDP80"
-                else "CDP P90" if method == "CDP90"
-                else "NoPE P90" 
-            )
-
+            label = labels[method]
             y_std_col = f"{metric}_std"
 
             ax.plot(
@@ -133,18 +178,35 @@ def plot_stacked_metrics(summary,colors):
 
         ax.set_ylabel(ylabel)
         ax.grid(True, alpha=0.3, linestyle="--")
+    
+        if metric in oracle_lines:
+            ax.axhline(
+                oracle_lines[metric],
+                color=colors[oracle_method][0],
+                linestyle="--",
+                linewidth=2,
+                label="Oracle" if metric == metrics[0][0] else None
+            )
+
+        if metric in reference_lines:
+            ax.axhline(
+                reference_lines[metric],
+                color="#9ad0d0",
+                linestyle=":",
+                linewidth=2,
+                label="Estimated non private" if metric == metrics[0][0] else None
+            )
 
     # legend only once
     axes[0].legend(
-        loc="upper left",
-        ncol=2
+        loc="upper center",
+        ncol=2,
+        bbox_to_anchor=(0.5, 1.5),
+
     )
     axes[1].set_yscale("log")
     axes[0].set_yscale("log")
     axes[2].set_yticks(np.arange(10, 101, 10))
-    eps_vals = sorted(summary["eps"].unique())
-
-
 
     axes[-1].set_xticks(range(len(eps_vals)))
     axes[-1].set_xticklabels([
@@ -189,7 +251,7 @@ def plot_stacked_metrics(summary,colors):
 
     plt.close(fig)
 
-def plot_hourly_success_panels(df,method):
+def plot_hourly_success_panels(df,method,colors):
     """
     One panel per epsilon.
     X-axis: hour
@@ -215,17 +277,11 @@ def plot_hourly_success_panels(df,method):
         nrows,
         ncols,
         figsize=(4*ncols, 2.8*nrows),
-        sharex=True,
+        #sharex=True,
         sharey=True
     )
 
     axes = np.atleast_1d(axes).flatten()
-
-    color_map = {
-        "CDP90": "#6A3D9A",
-        "LDP": "#e7298a",
-        "CDP_NoPE": "#008B8B",
-    }
 
     for ax, eps in zip(axes, eps_values):
 
@@ -251,14 +307,14 @@ def plot_hourly_success_panels(df,method):
             hours,
             success,
             lw=2,
-            color=color_map[method]
+            color=colors[method][0]
         )
 
         ax.fill_between(
             hours,
             ci_low,
             ci_high,
-            color=color_map[method],
+            color=colors[method][0],
             alpha=0.20
         )
 
@@ -269,10 +325,15 @@ def plot_hourly_success_panels(df,method):
         )
 
         ax.set_title(title)
-        ax.grid(True, alpha=0.3)
+
 
         ax.axhline(y=90, color="red", lw=1, ls="--", alpha=0.8)
-        ax.set_xticks(range(0, 24, 1))
+        ax.set_xticks(range(24), minor=True)      # hourly grid
+        ax.set_xticks(range(0, 24, 3))            # major ticks
+        ax.set_xticklabels(range(0, 24, 3))
+
+        ax.grid(True, which="major", alpha=0.3)
+        ax.grid(True, which="minor", alpha=0.15)
 
     for ax in axes[n_eps:]:
         ax.set_visible(False)
@@ -751,11 +812,13 @@ def make_plots(summary: pd.DataFrame) -> None:
     })
 
     colors = {
-        "CDP60": ["#7CAE00","#1b9e77"],  #lime + teal-green
-        "CDP80": ["#008B8B","#e7298a"],    #blue
-        "CDP90": ["#6A3D9A", "#e6ab02"],        # # purple + muted yellow
-        "CDP_NoPE": ["#008B8B","#008B8B"],      # brown + neutral gray
-        "LDP": ["#e7298a","#e7298a"]
+        "CDP60": ["#b30c16"],  #red
+        "CDP90": ["#6A3D9A"], #purple
+        "CDP90nB": ["#e7298a"],     #mystic magenta
+        "CDP_NoPE": ["#008B8B"],     #Dark Cyan 
+        "LDP": ["#7CAE00"], # mustard yellow
+        "LDPnB": ["#e6ab02"], #green
+        "Oracle": ["#005239"],  # tropical forest green
     }
 
     hourly_rows = []
@@ -779,15 +842,15 @@ def make_plots(summary: pd.DataFrame) -> None:
 
     hourly_df = pd.DataFrame(hourly_rows)
 
-    for method in ["CDP90", "LDP", "CDP_NoPE"]:
+    for method in ["CDP90", "LDP", "Oracle", "CDP90nB", "LDPnB", "CDP_NoPE"]:
         plot_hourly_success_panels(
             hourly_df,
-            method
+            method, colors
         )
-        plot_hourly_success_curves(
-            hourly_df,
-            method
-        )
+       # plot_hourly_success_curves(
+       #     hourly_df,
+       #     method
+       # )
 
     methods = summary["method"].unique()
     plot_stacked_metrics(summary,colors)
@@ -821,8 +884,10 @@ def main():
     CDP60 = list(RESULTS_DIR.glob("SOC_B_bidvalidation_summary_records_eps???_100_CDP_0.6_x.csv"))
     CDP80 = list(RESULTS_DIR.glob("SOC_B_bidvalidation_summary_records_eps???_100_CDP_0.8_x.csv")) 
     CDP90= list(RESULTS_DIR.glob("SOC_B_bidvalidation_summary_records_eps???_100_CDP_0.9.csv"))
+    CDP90nB = list(RESULTS_DIR.glob("SOC_B_bidvalidation_summary_records_eps???_100_CDPnB_0.9.csv"))
     NoPE90 = list(RESULTS_DIR.glob("SOC_B_bidvalidation_summary_records_eps???_100_CDP_NoPP.csv"))
     LDP = list(RESULTS_DIR.glob("SOC_B_bidvalidation_summary_records_eps???_100_LDP_0.9.csv"))
+    LDPnB = list(RESULTS_DIR.glob("SOC_B_bidvalidation_summary_records_eps???_100_LDPnB_0.9.csv"))
 
     # --- Extra files without eps ---
     CDP60_extra = RESULTS_DIR / "SOC_B_bidvalidation_summary_records_100_0.6_x.csv"
@@ -830,6 +895,7 @@ def main():
     CDP90_extra = RESULTS_DIR / "SOC_B_bidvalidation_summary_records_0.9.csv"
     NoPE90_extra = RESULTS_DIR / "SOC_B_bidvalidation_summary_records_0.9.csv" 
     LDP_extra = RESULTS_DIR / "SOC_B_bidvalidation_summary_records_0.9.csv"
+    oracle = RESULTS_DIR / "SOC_oracle_bidvalidation_summary_records_0.9.csv"
 
     rows = []
 
@@ -845,6 +911,9 @@ def main():
     # --- Load bonferroni ε files ---
     for path in sorted(CDP90, key=parse_eps):
         rows.append(load_summary(path, method="CDP90"))
+    
+    for path in sorted(CDP90nB, key=parse_eps):
+        rows.append(load_summary(path, method="CDP90nB"))
 
     #--- Load deterministic ε files ---
     for path in sorted(NoPE90, key=parse_eps):
@@ -853,6 +922,9 @@ def main():
     for path in sorted(LDP, key=parse_eps):
       rows.append(load_summary(path, method="LDP"))
 
+    for path in sorted(LDPnB, key=parse_eps):
+      rows.append(load_summary(path, method="LDPnB"))
+
     # --- Load extra analytical file (fake eps = 100) ---
     if CDP60_extra.exists():
         row = load_summary(CDP60_extra, method="CDP60")
@@ -860,15 +932,7 @@ def main():
         rows.append(row)
     else:
         print(f"Warning: Extra analytical file not found at {CDP60_extra}")
-
-    # # # --- Load extra scenario file (fake eps = 100) ---
-    if CDP80_extra.exists():
-        row = load_summary(CDP80_extra, method="CDP80")
-        row["eps"] = 12
-        rows.append(row)
-    else:
-        print(f"Warning: Extra scenario file not found at {CDP80_extra}")
-
+   
     # --- Load extra bonferroni file (fake eps = 100) ---
     if CDP90_extra.exists():
         row = load_summary(CDP90_extra, method="CDP90")
@@ -890,6 +954,13 @@ def main():
         rows.append(row)
     else:
         print(f"Warning: Extra LDP file not found at {LDP_extra}")
+
+    if oracle.exists():
+        row = load_summary(oracle, method="Oracle")
+        row["eps"] = 12
+        rows.append(row)
+    else:
+        print(f"Warning: Extra Oracle file not found at {oracle}")
 
     if not rows:
         raise FileNotFoundError("No valid input files found")

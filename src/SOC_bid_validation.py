@@ -238,7 +238,7 @@ def simulate_single_path(
         My,
         dt,
         p_rate,
-        el_price, p_bup, p_bdown):
+        el_price, p_bup, p_bdown,negative_flow):
     """
     Simulate the EV fleet evolution for a single arrival realization.
     Parameters
@@ -438,11 +438,13 @@ def simulate_single_path(
         neg_z.append(np.sum(z_real < -1e-1))
         neg_y.append(np.sum(y_real < -1e-1))
         if neg_z[-1] > 0 :
-            if np.min(z_real[z_real < -1e-1]) < -1:
-                print(f"Time step {t}: negative z: {neg_z[-1]} minimum value: {np.min(z_real[z_real < -1e-1]) if z_real[z_real < -1e-1].size > 0 else np.inf}" )
+            if np.min(z_real[z_real < -1e-1]) < -1e-3:
+                #print(f"Time step {t}: negative z: {neg_z[-1]} minimum value: {np.min(z_real[z_real < -1e-1]) if z_real[z_real < -1e-1].size > 0 else np.inf}" )
+                negative_flow += 1
         if neg_y[-1] > 0:
-            if np.min(y_real[y_real < -1e-1]) < -1:
-                print(f"Time step {t}: negative y: {neg_y[-1]} minimum value: {np.min(y_real[y_real < -1e-1]) if y_real[y_real < -1e-1].size > 0 else np.inf}" )
+            if np.min(y_real[y_real < -1e-1]) < -1e-3:
+                #print(f"Time step {t}: negative y: {neg_y[-1]} minimum value: {np.min(y_real[y_real < -1e-1]) if y_real[y_real < -1e-1].size > 0 else np.inf}" )
+                negative_flow += 1
 
         z_real = np.maximum(z_real, 0)
         y_real = np.maximum(y_real, 0)
@@ -459,7 +461,7 @@ def simulate_single_path(
     return (
         r_up * p_rate,
         r_down * p_rate,
-        el_cost,
+        el_cost,negative_flow
     )
 
 def validate_bids(parsed: ParsedPolicyOutput, samples: int, seed: int, dt: float, p_rate: float,
@@ -519,11 +521,14 @@ def validate_bids(parsed: ParsedPolicyOutput, samples: int, seed: int, dt: float
     daily_prices = read_daily_prices("data/fcrd_price.csv","data/spot_price.csv")
 
     # Stack hourly profiles
-    price_el_d = [np.repeat(daily_prices[d]["spot"], int(1/dt)) for d in range(60,60+samples)]
-
-    price_bup_d = [daily_prices[d]["fcrd_down"] for d in range(60,60+samples)]
-
-    price_bdown_d = [daily_prices[d]["fcrd_up"] for d in range(60,60+samples)]
+    if len(daily_prices) < 60 + samples:
+        price_el_d = [np.repeat(daily_prices[d]["spot"], int(1/dt)) for d in range(60,len(daily_prices))]
+        price_bup_d = [daily_prices[d]["fcrd_down"] for d in range(60,len(daily_prices))]
+        price_bdown_d = [daily_prices[d]["fcrd_up"] for d in range(60,len(daily_prices))]
+    else:
+        price_el_d = [np.repeat(daily_prices[d]["spot"], int(1/dt)) for d in range(60,60+samples)] 
+        price_bup_d = [daily_prices[d]["fcrd_down"] for d in range(60,60+samples)]
+        price_bdown_d = [daily_prices[d]["fcrd_up"] for d in range(60,60+samples)]
 
     price_bup_d_is = [daily_prices[d]["fcrd_down"] for d in range(60)]
     price_bdown_d_is = [daily_prices[d]["fcrd_up"] for d in range(60)]
@@ -533,11 +538,22 @@ def validate_bids(parsed: ParsedPolicyOutput, samples: int, seed: int, dt: float
 
     cap_ups = np.zeros((samples, hour_count), dtype=float)
     cap_downs = np.zeros((samples, hour_count), dtype=float)
+
+    negative_flow = 0
  
     for s,arrivals in enumerate(arrival_paths):
+        if s % 1000 == 0:
+            print(f"Sample {s+1}/{samples} ...")
         c = [i for i, (charge, slack) in enumerate(parsed.status) if charge > 0 and slack > 0]
-        
-        r_up, r_down , el_cost = simulate_single_path(
+
+        s_idx = s
+        while s_idx >= len(price_el_d):
+            s_idx -= len(price_el_d)
+            if s_idx < 0:
+                s_idx = 0
+                break
+
+        r_up, r_down , el_cost, negative_flow = simulate_single_path(
                                     arrivals=arrivals,
                                     lam=parsed.lam,
                                     status=parsed.status,
@@ -547,9 +563,10 @@ def validate_bids(parsed: ParsedPolicyOutput, samples: int, seed: int, dt: float
                                     My=parsed.My,
                                     dt=dt,
                                     p_rate=p_rate,
-                                    el_price=price_el_d[s],
+                                    el_price=price_el_d[s_idx],
                                     p_bup=past_price_bup, #default policy price for missing policy entries
-                                    p_bdown=past_price_bdown #default policy price for missing policy entries
+                                    p_bdown=past_price_bdown, #default policy price for missing policy entries
+                                    negative_flow=negative_flow
                                 )
         
         r_up = np.maximum(r_up, 0)
@@ -573,7 +590,7 @@ def validate_bids(parsed: ParsedPolicyOutput, samples: int, seed: int, dt: float
             bid_down = float(parsed.bid_down[h])
 
             # Calculate the revenue from the bid
-            bid_revenue = bid_up * price_bup_d[s][h] + bid_down * price_bdown_d[s][h] # make the price also dependent on the day realization
+            bid_revenue = bid_up * price_bup_d[s_idx][h] + bid_down * price_bdown_d[s_idx][h] # make the price also dependent on the day realization
 
             margin_up = cap_up - (bid_up + 0.2 * bid_down)
             margin_down = cap_down - bid_down
@@ -664,7 +681,7 @@ def validate_bids(parsed: ParsedPolicyOutput, samples: int, seed: int, dt: float
         "net_profit_for_EV_mean": float(np.mean(net_profit_for_EV)),
         "net_profit_for_EV_std": float(np.std(net_profit_for_EV, ddof=1)/np.sqrt(samples)),  # Standard error of the mean
         "net_profit_for_EV_all": net_profit_for_EV,
-    }
+    }, negative_flow
 
 
 
@@ -702,7 +719,8 @@ def main() -> int:
     hour_count = len(parsed.bid_up)
     time_count = len(parsed.time_labels)
 
-    
+
+
     if args.dt is None:
         if hour_count == 0:
             raise ValueError("Cannot infer dt from an empty bid list")
@@ -715,7 +733,9 @@ def main() -> int:
     if args.records is not None:
         arrival_paths = load_record_arrivals(args.records, parsed.status, parsed.time_labels)
 
-    result = validate_bids(parsed, samples=args.samples, seed=args.seed, dt=dt, p_rate=args.p_rate, arrival_paths=arrival_paths)
+    result, negative_flow = validate_bids(parsed, samples=args.samples, seed=args.seed, dt=dt, p_rate=args.p_rate, arrival_paths=arrival_paths)
+
+    print(f"Negative flow count: {negative_flow} percentage: {negative_flow / (args.samples * time_count) * 100:.2f}%")
 
     print(f"Parsed file: {args.input}")
     print(f"Hours: {hour_count}, time steps: {time_count}, dt: {dt:.4f}, samples: {args.samples}")
@@ -729,7 +749,7 @@ def main() -> int:
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
     with args.output.open("w", encoding="utf-8") as f:
-        f.write("hour,bid_up,bid_down,objective_value,reliability,empirical_feasibility,min_margin,net_profit_mean,net_profit_std,net_profit_for_EV_mean,net_profit_for_EV_std,p90_success_rate,p90_success_rate_std,empirical_hour_prob_ci_low,empirical_hour_prob_ci_high\n")         
+        f.write("hour,bid_up,bid_down,objective_value,reliability,empirical_feasibility,min_margin,net_profit_mean,net_profit_std,net_profit_for_EV_mean,net_profit_for_EV_std,p90_success_rate,p90_success_rate_std,empirical_hour_prob_ci_low,empirical_hour_prob_ci_high, negative_flow\n")         
         for h in range(hour_count):
             f.write(
                 f"{h},{parsed.bid_up[h]:.6f},{parsed.bid_down[h]:.6f},{parsed.objective_value},"
@@ -737,7 +757,7 @@ def main() -> int:
                 f"{result['net_profit_mean']:.6f},{result['net_profit_std']:.6f},"
                 f"{result['net_profit_for_EV_mean']:.6f},{result['net_profit_for_EV_std']:.6f},"
                 f"{result['p90_success_rate']},{result['p90_success_rate_std']},"
-                f"{result['empirical_hour_prob_ci_low'][h]:.6f},{result['empirical_hour_prob_ci_high'][h]:.6f}\n"
+                f"{result['empirical_hour_prob_ci_low'][h]:.6f},{result['empirical_hour_prob_ci_high'][h]:.6f},{negative_flow:.6f}\n"
             )
     
     # Save full distributions separately
