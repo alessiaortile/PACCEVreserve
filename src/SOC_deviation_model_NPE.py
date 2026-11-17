@@ -238,44 +238,14 @@ def arrival_bias_propagation(status,T,lam,z,y,eps,next_charge,next_slack,
     z_bar = np.zeros((n_states, T))
     y_bar = np.zeros((n_states, T))
 
-    n_days = 60
+
     Delta1 = 2.0
 
     if privacy == "CDP":
-        # q = np.exp(-eps / Delta1)
-        # sigma_eta2 = 2.0 * q / (1.0 - q)**2
-
-        # s_hat = np.sqrt((lam + sigma_eta2) / n_days)
-        # b_hat = {(j, t): s_hat[j][t] / np.sqrt(2 * np.pi) for j in range(len(status)) for t in range(T)}
-        print(f"projection_error shape: {projection_error.shape}")
         b_hat = {(j, t): projection_error[j][t] for j in range(len(status)) for t in range(T)}
 
     elif privacy == "LDP":
-        # p = 0.5
-        # q = 1.0 / (np.exp(eps) + 1.0)
 
-        # # shape (T,)
-        # N_t = np.sum(lam, axis=0)
-
-        # # avoid division by zero
-        # N_t_safe = np.maximum(N_t, 1e-12)
-
-        # # shape (n_states, T)
-        # r = q + (p - q) * lam / N_t_safe
-
-        # sigma2_oue = (
-        #     lam / n_days
-        #     + r * (1.0 - r)
-        #     / (n_days * (p - q) ** 2)
-        # )
-
-        # s_hat = np.sqrt(sigma2_oue)
-
-        # b_hat = {
-        #     (j, t): s_hat[j, t] / 2 #np.sqrt(2 * np.pi)
-        #     for j in range(len(status))
-        #     for t in range(T)
-        # }
         print(f"projection_error shape: {projection_error.shape}")
         b_hat = {(j, t): projection_error[j][t] for j in range(len(status)) for t in range(T)}
 
@@ -325,145 +295,6 @@ def arrival_bias_propagation(status,T,lam,z,y,eps,next_charge,next_slack,
 
     return bid_up, bid_down
 
-
-def ldp_bias_bound(lam_t, H_inv, H, n_days, z_margin=0.0):
-    """
-    Per-state bound on |bias| of the nonnegative GLS estimator under LDP (RR),
-    Gaussian approximation, for a single time step.
-
-    lam_t : (K,) estimated arrival rates at time t (plug-in)
-    Returns (K,) vector with |b_x| <= sqrt(Sigma_hat_xx) * min(B_gauss, sqrt(K)).
-    """
-    K = len(lam_t)
-
-    # GLS covariance: (H' Sigma^-1 H)^-1 = H^-1 diag(H lam / D) H^-T  (H square, invertible)
-    d = np.maximum(H @ lam_t, 1e-12) / n_days
-    Sigma_hat = (H_inv * d) @ H_inv.T
-    sig = np.sqrt(np.maximum(np.diag(Sigma_hat), 1e-24))
-
-    # Conservative plug-in: m_y is decreasing in lambda, so use a lower value
-    lam_c = np.maximum(lam_t - z_margin * sig, 0.0)
-
-    # m_y = E[(-lambda_u,y)_+^2] for lambda_u,y ~ N(lam, sig^2)
-    r = lam_c / sig
-    m = (sig**2 + lam_c**2) * norm.cdf(-r) - lam_c * sig * norm.pdf(r)
-    m = np.maximum(m, 0.0)
-
-    # Q-norm bound ||b||_Q <= sqrt(lambda_max(Q) * sum_y m_y), lambda_max(Q) = 1/lambda_min(Sigma_hat)
-    lam_min = max(np.linalg.eigvalsh(Sigma_hat)[0], 1e-12)
-    B_gauss = np.sqrt(m.sum() / lam_min)
-
-    # Distribution-free bound ||b||_Q <= sqrt(K); take the tighter of the two
-    B_q = min(B_gauss, np.sqrt(K))
-
-    # Component-wise (Cauchy-Schwarz in the Q-metric): |b_x| <= sqrt(Sigma_xx) * ||b||_Q
-    return sig * B_q
-
-
-def arrival_bias_propagation_ldp(status, T, lam, z, y, eps, next_charge, next_slack,
-                                 flex_state, p_rate, r_up_x, r_down_x, kappa_h,
-                                 tau_up, tau_down, T_h, H, H_matrix,
-                                 price_up, price_down,
-                                 n_days=60, z_margin=0.0):
-    """
-    Estimate LDP arrival-induced reserve bias (nonnegative GLS under randomized
-    response) and optimize bias-adjusted bids.
-
-    lam : (n_states, T) estimated arrival rates
-    H   : (n_states, n_states) randomized-response matrix (eps enters through H;
-          the eps argument is kept only for signature compatibility)
-
-    Returns
-    -------
-    tuple[np.ndarray, np.ndarray]
-        Bias-adjusted upward and downward reserve bids.
-    """
-    n_states = len(status)
-    lam = np.asarray(lam, dtype=float)
-
-    # --- charging policy u[i,t] = z/(z+y), as before ---
-    u = np.zeros((n_states, T), dtype=float)
-    for i in range(n_states):
-        denom = y[i, :] + z[i, :]
-        ratio = np.zeros_like(denom, dtype=float)
-        valid = denom > 0
-        ratio[valid] = z[i, valid] / denom[valid]
-        ratio[ratio <= 0] = 0
-        u[i, :] = ratio
-
-        if status[i][0] > 0 and status[i][1] == 0:
-            u[i, :] = 1.0
-        elif status[i][0] == 0:
-            u[i, :] = 0.0
-    u = np.clip(u, 0.0, 1.0)
-
-    # --- per-state, per-time LDP bias bound (magnitude) ---
-    H_inv = np.linalg.inv(H_matrix)
-    b_hat = np.zeros((n_states, T))
-    for t in range(T):
-        b_hat[:, t] = ldp_bias_bound(lam[:, t], H_inv, H_matrix, n_days, z_margin)
-
-    # --- propagate bias magnitudes through the population dynamics ---
-    # The transition matrix is nonnegative, so |B b| <= B |b| and the propagated
-    # magnitude is a valid bound on the propagated bias.
-    z_bar = np.zeros((n_states, T))
-    y_bar = np.zeros((n_states, T))
-    n_current = b_hat[:, 0].copy()
-
-    for t in range(T):
-        u_t = u[:, t]
-        z_bar[:, t] = u_t * n_current
-        y_bar[:, t] = (1.0 - u_t) * n_current
-
-        if t < T - 1:
-            B = np.zeros((n_states, n_states), dtype=float)
-            for i, (charge, slack) in enumerate(status):
-                for j in next_charge.get((charge, slack), []):
-                    B[i, j] = u_t[j]
-                for j in next_slack.get((charge, slack), []):
-                    B[i, j] = 1.0 - u_t[j]
-            n_current = B @ n_current + b_hat[:, t + 1]
-
-    flex = list(flex_state)
-    r_up_bias = z_bar[flex, :].sum(axis=0) * p_rate
-    r_down_bias = y_bar[flex, :].sum(axis=0) * p_rate
-
-    # --- bias-adjusted reserve capacities ---
-    tot_reserve_up = np.array([
-        max(r_up_x[t] - r_up_bias[t]
-            - p_rate * kappa_h[int(t * dt)] * tau_up[int(t * dt), t, "up"], 0.0)
-        for t in range(T)
-    ])
-    tot_reserve_down = np.array([
-        max(r_down_x[t] - r_down_bias[t]
-            - p_rate * kappa_h[int(t * dt)] * tau_down[int(t * dt), t, "down"], 0.0)
-        for t in range(T)
-    ])
-
-    # Recompute optimal bid using the bias-adjusted reserve capacities
-    m = gp.Model()
-    bidu = m.addVars(H, lb=0)
-    bidd = m.addVars(H, lb=0)
-
-    tot_reserve_up = np.array([r_up_x[t] - r_up_bias[t] - p_rate * kappa_h[int(t*dt)] * tau_up[int(t*dt), t, "up"] if r_up_x[t] - r_up_bias[t] - p_rate * kappa_h[int(t*dt)] * tau_up[int(t*dt), t, "up"]  > 0 else 0 for t in range(T)]) 
-    tot_reserve_down = np.array([r_down_x[t] - r_down_bias[t]  - p_rate * kappa_h[int(t*dt)] * tau_down[int(t*dt), t, "down"] if r_down_x[t] - r_down_bias[t]  - p_rate * kappa_h[int(t*dt)] * tau_down[int(t*dt), t, "down"] > 0 else 0 for t in range(T)])
-
-    m.addConstrs(bidu[h] + bidd[h]*0.2 <= tot_reserve_up[t]  for h in range(H) for t in T_h[h])
-    m.addConstrs(bidd[h] <= tot_reserve_down[t]  for h in range(H) for t in T_h[h])
-
-    objective = gp.quicksum(
-        price_up[h] * bidu[h] + price_down[h] * bidd[h] for h in range(H)
-    )
-
-    m.setObjective(objective, GRB.MAXIMIZE)
-    m.optimize()
-
-    new_bid_up = np.array([bidu[h].X for h in range(H)])
-    new_bid_down = np.array([bidd[h].X for h in range(H)])
-    bid_up = new_bid_up
-    bid_down = new_bid_down
-    return bid_up, bid_down
-
 def cooptimization(lam,sigma, status, flex_state, price_up, price_down, real_price,
                     dt, n, T, H, p_rate, lic_path,eps,DP, beta=0.1):
     """
@@ -511,7 +342,7 @@ def cooptimization(lam,sigma, status, flex_state, price_up, price_down, real_pri
         reserve capacities, and disturbance-feedback coefficients.
     """
 
-    arrival_deviation_lower, arrival_deviation_upper = deviation_bounds(lam, alpha=0.95)
+    arrival_deviation_lower, arrival_deviation_upper = deviation_bounds(lam, alpha=0.99)
     next_charge, next_slack = build_state_predecessor_maps(status)
     idx = {(c, s): i for i, (c, s) in enumerate(status)}
 
@@ -818,9 +649,12 @@ def cooptimization(lam,sigma, status, flex_state, price_up, price_down, real_pri
     print("NumQConstrs:", m.NumQConstrs)
     print("NumConstrs:", m.NumConstrs)
     m.optimize()
+
+    if m.status == GRB.INFEASIBLE or m.status == GRB.UNBOUNDED:
+        return None, None, None, None, None, None, None, None, None
     print("objective value:", m.objVal)
     print("Reserve bid status:", m.status)
-   
+
     z = np.array([[z_bar[i, t].X for t in range(T)] for i in range(len(status))])
     y = np.array([[y_bar[i, t].X for t in range(T)] for i in range(len(status))])
     bid_up = np.array([b_up[h].X for h in range(H)])
@@ -838,8 +672,105 @@ def cooptimization(lam,sigma, status, flex_state, price_up, price_down, real_pri
     print("qexpress_up:", [qexpr_up[t].getValue() for t in range(T)])
     print("qexpress_down:", [qexpr_down[t].getValue() for t in range(T)])
 
+
     return z, y, bid_up, bid_down, bid_rev, r_up_x, r_down_x, Mz_sol, My_sol
 
+def error_log(lam, real_lam, sigma, status, T):
+    """Print estimation-error and z-score diagnostics for the first ``T`` steps.
+    Parameters
+    ----------
+    lam : array-like
+        Estimated arrival rates for each state.
+    real_lam : array-like
+        True arrival rates for each state.
+    sigma : array-like
+        Covariance matrices for the estimated arrival rates.
+    status : list of tuples
+        List of (charge, slack) pairs representing the system states.
+    T : int
+        Number of time steps to consider for diagnostics."""
+    
+    lam = np.asarray(lam)[:, :T]
+    real_lam = np.asarray(real_lam)[:, :T]
+
+    flex_state = [
+        i for i, (charge, slack) in enumerate(status)
+        if charge > 0 and slack > 0
+    ]
+
+    std = np.array([
+        [np.sqrt(max(float(sigma[t][j][j]), 0.0)) for t in range(T)]
+        for j in flex_state
+    ])
+
+    z = np.divide(
+        lam[flex_state] - real_lam[flex_state],
+        std,
+        out=np.zeros_like(lam[flex_state], dtype=float),
+        where=std > 0,
+    )
+
+    print("mean z-score across all states and time steps:", np.mean(np.abs(z)))
+    print("max z-score across all states and time steps:", np.max(np.abs(z)))
+    print("avg bias across all states and time steps:", np.mean(np.abs(lam[flex_state] - real_lam[flex_state])))
+    print("avg std across all states and time steps:", np.mean(std))
+
+    positive_z = np.maximum(z, 0)
+    z_max = np.max(np.abs(positive_z), axis=1)
+
+    print(
+        "mean positive z-score across all states and time steps:",
+        np.mean(positive_z),
+    )
+
+    print("States with the largest z-scores:")
+    for idx in np.argsort(z_max)[::-1][:10]:
+        state_idx = flex_state[idx]
+        charge, slack = status[state_idx]
+        print(
+            f"State {state_idx}: max z-score = {z_max[idx]:.2f}, "
+            f"charge = {charge}, slack = {slack}"
+        )
+
+    energy_hat = np.sum(lam * np.array([charge for charge, _ in status])[:, None])
+    energy_real = np.sum(real_lam * np.array([charge for charge, _ in status])[:, None])
+
+    slack_hat = np.sum(lam * np.array([slack for _, slack in status])[:, None])
+    slack_real = np.sum(real_lam * np.array([slack for _, slack in status])[:, None])
+
+    total_hat = np.sum(lam)
+    total_real = np.sum(real_lam)
+
+    flex_hat = np.sum(lam[flex_state])
+    flex_real = np.sum(real_lam[flex_state])
+
+    def error_percent(value, reference):
+        return 100 * (value - reference) / reference if reference else 0.0
+
+    print(
+        f"Total energy (hat): {energy_hat}, "
+        f"Total energy (real): {energy_real} "
+        f"%error: {error_percent(energy_hat, energy_real):.2f}%"
+    )
+    print(
+        f"Total slack (hat): {slack_hat}, "
+        f"Total slack (real): {slack_real} "
+        f"%error: {error_percent(slack_hat, slack_real):.2f}%"
+    )
+    print(
+        f"Total mass (hat): {total_hat}, "
+        f"Total mass (real): {total_real} "
+        f"%error: {error_percent(total_hat, total_real):.2f}%"
+    )
+    print(
+        f"Total mass (hat) for flex states: {flex_hat}, "
+        f"Total mass (real) for flex states: {flex_real} "
+        f"%error: {error_percent(flex_hat, flex_real):.2f}%"
+    )
+
+    for t in range(T):
+        print(f"Flex mass at t={t}: {flex_hat if T == 1 else np.sum(lam[flex_state, t])}, "
+              f"{np.sum(real_lam[flex_state, t])}")
 
 if __name__ == "__main__":
 
@@ -853,18 +784,16 @@ if __name__ == "__main__":
     
 
     parser = argparse.ArgumentParser(description="Optimal bid computation")
-    parser.add_argument("--eps", type=float, default=None, help="Epsilon value for lambda inference.")
     parser.add_argument("--scale", type=int, default=100, help="Scaling factor for lambda inference.")
     parser.add_argument("--path", type=Path, default=None, help="Path to load control policy from.")
-    parser.add_argument("--DP", type=str, default=None, help="Whether to apply DP state privatization (build_DPevent_records)")
     parser.add_argument("--seed", type=int, default=42, help="Random seed for reproducibility.")
     args = parser.parse_args()
-    eps = args.eps
     scale_stats = args.scale
-    DP = args.DP
-
     seed = args.seed
     np.random.seed(seed)
+
+    eps = None
+    DP = None
 
     daily_prices = read_daily_prices("data/fcrd_price.csv","data/spot_price.csv")
 
@@ -880,26 +809,18 @@ if __name__ == "__main__":
     price_bup = fcrd_down_matrix.mean(axis=0)
     price_bdown = fcrd_up_matrix.mean(axis=0)
 
-    #H_matrix = None
 
-    if DP == "CDP" or DP == "CDPnB":
-        _, status = load_ev_model_parameters(dt, p_rate, scale_stats)
-        lam, status, sigma, Sigma_lambda, projection_error = (
-            estimate_arrival_rate_from_records(
-                states=status,
-                n_time_steps=T,
-                time_step_h=dt,
-                n_chargers=scale_stats,
-                privacy_mechanism="CDP",
-                epsilon=eps,
-                csv_path=f"data/ev_records_{int(scale_stats)}_insample.csv",
-                seed=seed
-            )
-        )
-      
-        # for NoPP method
-        sigma = np.sigma = [np.diag(lam[:, t]) for t in range(T)]  # Placeholder for sigma if not using DP propapgatio
-
+    _, status = load_ev_model_parameters(dt, p_rate, scale_stats)
+    lam, status = estimate_arrival_rate_from_records(
+        states=status,
+        n_time_steps=T,
+        time_step_h=dt,
+        n_chargers=scale_stats,
+        privacy_mechanism=None,
+        csv_path=f"data/ev_records_{int(scale_stats)}_insample.csv",
+    )
+    lam = lam[:,:T]
+    sigma = [np.diag(lam[:, t]) for t in range(T)]  # Placeholder for sigma if not using DP #+1.96*se[:, t]
 
     n = len(status)
     next_charge, next_slack = build_state_predecessor_maps(status)
@@ -910,48 +831,49 @@ if __name__ == "__main__":
         lam, sigma,status, flex_state, price_bup, price_bdown, price_el, dt, n, T, H, p_rate, lic_path,eps, DP=DP, beta=beta
     )
 
-    print("Optimal bids computed:")
-    print("Bid up:", bid_up)
-    print("Bid down:", bid_down)
-    print("Expected revenue:", bid_rev)
+    if bid_up is not None:
 
-    bids = []
-    for h in range(H):
-        bids.append((bid_up[h], bid_down[h]))
+        print("Optimal bids computed:")
+        print("Bid up:", bid_up)
+        print("Bid down:", bid_down)
+        print("Expected revenue:", bid_rev)
 
-    print(f"Optimized bids: {bids} ")
-    print("final revenue:", bid_rev)
+        bids = []
+        for h in range(H):
+            bids.append((bid_up[h], bid_down[h]))
 
-    u = np.zeros((n,T))
+        print(f"Optimized bids: {bids} ")
+        print("final revenue:", bid_rev)
 
-    for t in range(T):
-        for i in range(n):
-            u[i,t] = z[i,t]/(z[i,t]+y[i,t]) if (z[i,t]+y[i,t]) > 0 else 0
-            if status[i][1] == 0:
-                u[i,t] = 1 #force charge if no slack
-            elif status[i][0] == 0:
-                u[i,t] = 0 #force wait if no charge needed
-    u = np.clip(u, 0.0, 1.0)
+        u = np.zeros((n,T))
 
-    os.makedirs("results", exist_ok=True)
+        for t in range(T):
+            for i in range(n):
+                u[i,t] = z[i,t]/(z[i,t]+y[i,t]) if (z[i,t]+y[i,t]) > 0 else 0
+                if status[i][1] == 0:
+                    u[i,t] = 1 #force charge if no slack
+                elif status[i][0] == 0:
+                    u[i,t] = 0 #force wait if no charge needed
+        u = np.clip(u, 0.0, 1.0)
 
-    if eps is not None:
-        path = f"results/SOC_B_policy_results_DP_eps{eps}_{scale_stats}_{DP}_NoPP.pkl" #{1-beta}.
-    else:
-        path = f"results/SOC_B_policy_results_{int(scale_stats)}_NoPP.pkl" #{1-beta}
+        os.makedirs("results", exist_ok=True)
+        os.makedirs(f"results/seed{seed}", exist_ok=True)
 
-    print(f"Saving results to {path}")
 
-    results = {
-        "bids": bids,
-        "bid_revenue": bid_rev,
-        "status": status,
-        "lambda": lam,
-        "z": z,
-        "y": y,
-        "Mz": Mz_sol,
-        "My": My_sol,
-        "T": T,
-    }
-    with open(path, "wb") as f:
-        pickle.dump(results, f, protocol=pickle.HIGHEST_PROTOCOL)
+        path = f"results/seed{seed}/SOC_B_policy_results_{int(scale_stats)}_{1-beta}_NPE.pkl" #{1-beta}
+
+        print(f"Saving results to {path}")
+
+        results = {
+            "bids": bids,
+            "bid_revenue": bid_rev,
+            "status": status,
+            "lambda": lam,
+            "z": z,
+            "y": y,
+            "Mz": Mz_sol,
+            "My": My_sol,
+            "T": T,
+        }
+        with open(path, "wb") as f:
+            pickle.dump(results, f, protocol=pickle.HIGHEST_PROTOCOL)

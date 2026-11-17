@@ -653,16 +653,18 @@ def estimate_arrival_rate_from_records(
 
         n_days = observed_bits_daily.shape[0]
 
-        print(
-            f"Loaded OUE observations with shape "
-            f"{observed_bits_daily.shape}"
-        )
+        
 
         # daily average reported counts
         observed_bits = (
             observed_bits_daily
             #.mean(axis=0)
+            .sum(axis=0)
             .T
+        )
+        print(
+            f"Loaded OUE observations with shape "
+            f"{observed_bits.shape}"
         )
     elif privacy_mechanism == "CDP":
         df = pd.read_csv(csv_path)
@@ -823,6 +825,11 @@ def estimate_arrival_rate_oue(
         dtype=float,
     )
 
+    lambda_unbiased = np.zeros(
+        (n_states, n_time_steps),
+        dtype=float,
+    )
+
     for time_index in range(n_time_steps):
 
         # ----------------------------------------------------------
@@ -851,12 +858,12 @@ def estimate_arrival_rate_oue(
         lambda_unbiased[:, time_index] = c_hat_unbiased / n_days
 
         estimate = np.maximum(
-           lambda_unbiased,
+           lambda_unbiased[:, time_index],
            0.0,
         )
 
         projection_error[:, time_index] = np.maximum(
-            -lambda_unbiased,
+            -lambda_unbiased[:, time_index],
             0.0,
         )
 
@@ -888,7 +895,7 @@ def estimate_arrival_rate_oue(
 
             # Poisson arrival variance
             poisson_variance = (
-                lam / n_days
+                lambda_hat[state_index, time_index] / n_days
             )
 
             var_rate = var_count / n_days**2

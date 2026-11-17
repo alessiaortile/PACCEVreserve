@@ -24,15 +24,28 @@ module load gurobipy/gurobi-12.0.1-python-3.11.9
 
 ## B simulations ##
 set -e
-
-
-SEEDS_train=(1042 1043 1044 1045 1046 1222 1224 1226 1228 1230 1235 1240 1500 1550 1600 1650 3157 3333 3444 3465 3581 3651 3747 3846 3855 3912 4000 4012
- 4038 4120 4238 4327 4820 4873 4876 5000 5100 5150 6122 6450 6710 6825 6840 7834 9650 36511 36522 47336 47895 63205)
-SEEDS_test=(2718 3141 4096 5381 6029 7919 8191 9973 10007 12345 20240 31337 42424 65537)
+# 1043 1044 1045 1046 1222 1224 1226 1228 1230 1235
+# 1240 1500 1550 1600 1650 3157 3333 3444 3465 3581 
+# 3651 3747 3846 3855 3912 4012 4038 4120 4238 4327 4820
+# 4873 4876 5000 5100 5150 6122 6450 6710 6825 6840 
+# 7834 9650 36511 36522 47336 47895 51234 63205 71785 627282
+SEEDS=(7834 9650 36511 36522 47336 47895 51234 63205 71785 627282) 
 EPS_LIST=(8.0 4.0 2.0 1.0 0.5)
 
+for SEED in "${SEEDS[@]}"; do
+    OUTDIR="results/seed${SEED}"
+    mkdir -p "$OUTDIR"
 
-for SEED in "${SEEDS_train[@]}"; do
+    for EPS in "${EPS_LIST[@]}"; do
+        echo "=== seed ${SEED}, eps ${EPS} ==="
+
+        python -u src/SOC_deviation_model.py --scale 100 --eps ${EPS} --DP LDP --seed ${SEED}
+    done
+done
+
+SEEDS_test=(2718 3141 4096 5381 6029 7919 8191 9973 10007 12345 20240 31337 42424 65537)
+
+for SEED in "${SEEDS[@]}"; do
     OUTDIR="results/seed${SEED}"
     mkdir -p "$OUTDIR"
 
@@ -61,23 +74,6 @@ for SEED in "${SEEDS_train[@]}"; do
     done
 done
 
-SEEDS=(1235 1240 1500 1550 1600 1650                               #1224 1226 1228 1230 
-36511 36522 3855 3846 3912 3465 3444 3747 3651 3333
-4120 4876 4238 4327 4038 4873 4012 4000 47895 47336
-6840 63205 6450 6710 6122) #5000 5100 5150 6825 4820 9650 3581 3157 1222 7834
-EPS_LIST=(8.0 4.0 2.0 1.0 0.5)
-
-# for SEED in "${SEEDS[@]}"; do
-#     OUTDIR="results/seed${SEED}"
-#     mkdir -p "$OUTDIR"
-
-#     for EPS in "${EPS_LIST[@]}"; do
-#         echo "=== seed ${SEED}, eps ${EPS} ==="
-
-#         python -u src/SOC_deviation_model.py --scale 100 --eps ${EPS} --DP LDP --seed ${SEED}
-#         #python -u src/SOC_bid_validation.py --records data/ev_records_100_oos.csv --input results/seed${SEED}/SOC_B_policy_results_DP_eps${EPS}_100_LDP_0.9.pkl --output results/seed${SEED}/SOC_B_bidvalidation_summary_records_eps${EPS}_100_LDP_0.9.csv
-#     done
-# done
 
 #python -u src/SOC_deviation_model.py --scale 100
 #python -u src/SOC_bid_validation.py --records data/ev_records_100_oos.csv --input results/SOC_B_policy_results_100_0.9.pkl --output results/SOC_B_bidvalidation_summary_records_100_0.9.csv

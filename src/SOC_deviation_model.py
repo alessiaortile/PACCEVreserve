@@ -11,6 +11,7 @@ from pathlib import Path
 from lam_price_setting import estimate_arrival_rate_from_records, load_ev_model_parameters, read_daily_prices, build_rr_matrix
 from dataclasses import dataclass
 from typing import Dict, List, Tuple
+from scipy.stats import poisson, nbinom, norm
 
 
 @dataclass
@@ -170,35 +171,75 @@ def build_active_states(status, lam, T):
     return Mactive, Reach
 
 
-def deviation_bounds(lam, alpha):
+# def deviation_bounds(lam, alpha):
+#     """
+#     Compute lower and upper Poisson arrival-count deviations.
+#     Parameters
+#     ----------
+#     lam:
+#         Expected arrival rates. 
+#     alpha:
+#         Central coverage probability of the interval.
+#     Returns
+#     -------
+#     lower_deviation:
+#         Difference between the lower Poisson quantile and ``lam``.
+#     upper_deviation:
+#         Difference between the upper Poisson quantile and ``lam``.
+#     """
+#     lam = np.asarray(lam, dtype=float)
+#     safe_lam = lam.copy()
+
+#     lower_tail = (1.0 - alpha) / 2.0
+#     upper_tail = 1.0 - (1.0 - alpha) / 2.0
+
+#     a_lo = poisson.ppf(lower_tail, safe_lam)
+#     a_hi = poisson.ppf(upper_tail, safe_lam)
+
+#     x = a_lo - safe_lam
+#     v = a_hi - safe_lam
+
+#     return x, v
+
+
+
+def deviation_bounds(lam, alpha, sigma2=None):
     """
-    Compute lower and upper Poisson arrival-count deviations.
-    Parameters
-    ----------
-    lam:
-        Expected arrival rates. 
-    alpha:
-        Central coverage probability of the interval.
-    Returns
-    -------
-    lower_deviation:
-        Difference between the lower Poisson quantile and ``lam``.
-    upper_deviation:
-        Difference between the upper Poisson quantile and ``lam``.
+    Lower/upper deviations of the arrival count from its mean `lam`,
+    including estimation uncertainty.
+
+    lam    : estimated arrival rates (lambda_hat)
+    alpha  : central coverage of the interval (apply Bonferroni outside if needed)
+    sigma2 : variance of the rate estimator (diag of Sigma_hat), same shape as lam.
+             If None or 0, falls back to the pure Poisson bound.
     """
+    #print(f"Computing deviation bounds with lam shape: {lam.shape}, sigma2 shape: {None if sigma2 is None else sigma2.shape}, alpha: {alpha}")
+    sigma2 = np.diagonal(sigma2, axis1=1, axis2=2).T   # -> (144, 24)
     lam = np.asarray(lam, dtype=float)
-    safe_lam = lam.copy()
+    sigma2 = np.zeros_like(lam) if sigma2 is None else np.asarray(sigma2, dtype=float)
 
-    lower_tail = (1.0 - alpha) / 2.0
-    upper_tail = 1.0 - (1.0 - alpha) / 2.0
+    lo_p = (1.0 - alpha) / 2.0
+    hi_p = 1.0 - lo_p
 
-    a_lo = poisson.ppf(lower_tail, safe_lam)
-    a_hi = poisson.ppf(upper_tail, safe_lam)
+    # Poisson baseline
+    a_lo = poisson.ppf(lo_p, lam)
+    a_hi = poisson.ppf(hi_p, lam)
 
-    x = a_lo - safe_lam
-    v = a_hi - safe_lam
+    # Negative binomial where the estimator is uncertain and lam > 0
+    use_nb = (sigma2 > 1e-12) & (lam > 1e-12)
+    r = np.where(use_nb, lam**2 / np.where(use_nb, sigma2, 1.0), 1.0)   # shape
+    p = np.where(use_nb, r / (r + lam), 0.5)                            # success prob
+    a_lo = np.where(use_nb, nbinom.ppf(lo_p, r, p), a_lo)
+    a_hi = np.where(use_nb, nbinom.ppf(hi_p, r, p), a_hi)
 
-    return x, v
+    # Fallback: lam = 0 (e.g. after projection) but sigma2 > 0 -> Gaussian on the
+    # rate uncertainty, one-sided, so the true rate may still be positive
+    zero_case = (sigma2 > 1e-12) & ~(lam > 1e-12)
+    z = norm.ppf(hi_p)
+    a_hi = np.where(zero_case, z * np.sqrt(sigma2), a_hi)
+    a_lo = np.where(zero_case, 0.0, a_lo)
+
+    return a_lo - lam, a_hi - lam
 # ----------------------------------------------------------------------
 # Main co-optimization
 # ----------------------------------------------------------------------
@@ -342,7 +383,7 @@ def cooptimization(lam,sigma, status, flex_state, price_up, price_down, real_pri
         reserve capacities, and disturbance-feedback coefficients.
     """
 
-    arrival_deviation_lower, arrival_deviation_upper = deviation_bounds(lam, alpha=0.95)
+    arrival_deviation_lower, arrival_deviation_upper = deviation_bounds(lam, alpha=0.99, sigma2=sigma)
     next_charge, next_slack = build_state_predecessor_maps(status)
     idx = {(c, s): i for i, (c, s) in enumerate(status)}
 
@@ -834,8 +875,8 @@ if __name__ == "__main__":
             projection_error = np.array(data["metadata"]["projection_error"]) if "projection_error" in data["metadata"] else None
 
             if projection_error is None:
-                print("Projection error not found in metadata.")
-                print("Inferring lambda with DP...")
+                #print("Projection error not found in metadata.")
+                #print("Inferring lambda with DP...")
                 lam_hat, status, sigma, Sigma_lambda, projection_error = (
                     estimate_arrival_rate_from_records(
                         states=status,
@@ -847,11 +888,11 @@ if __name__ == "__main__":
                         seed=seed,
                     )
                 )
-                print("projection error computed ",projection_error)
+                #print("projection error computed ",projection_error)
 
             #H_matrix = build_rr_matrix(eps, len(status))
 
-            error_log(lam, real_lam, sigma, status, T)
+            #error_log(lam, real_lam, sigma, status, T)
 
         except FileNotFoundError:
             print("Read records and infer lambda...")

@@ -434,17 +434,8 @@ def simulate_single_path(
             for j,i,val in My_by_tk.get((t,k), ()):
                 y_real[i] += val * disturbance[j]
 
-
-        neg_z.append(np.sum(z_real < -1e-1))
-        neg_y.append(np.sum(y_real < -1e-1))
-        if neg_z[-1] > 0 :
-            if np.min(z_real[z_real < -1e-1]) < -1e-3:
-                #print(f"Time step {t}: negative z: {neg_z[-1]} minimum value: {np.min(z_real[z_real < -1e-1]) if z_real[z_real < -1e-1].size > 0 else np.inf}" )
-                negative_flow += 1
-        if neg_y[-1] > 0:
-            if np.min(y_real[y_real < -1e-1]) < -1e-3:
-                #print(f"Time step {t}: negative y: {neg_y[-1]} minimum value: {np.min(y_real[y_real < -1e-1]) if y_real[y_real < -1e-1].size > 0 else np.inf}" )
-                negative_flow += 1
+        negative_flow += np.sum(z_real < -0.1)
+        negative_flow += np.sum(y_real < -0.1)
 
         z_real = np.maximum(z_real, 0)
         y_real = np.maximum(y_real, 0)
@@ -540,6 +531,8 @@ def validate_bids(parsed: ParsedPolicyOutput, samples: int, seed: int, dt: float
     cap_downs = np.zeros((samples, hour_count), dtype=float)
 
     negative_flow = 0
+
+    print(f"Starting validation with {len(arrival_paths)} samples ...")
  
     for s,arrivals in enumerate(arrival_paths):
         if s % 1000 == 0:
@@ -735,7 +728,7 @@ def main() -> int:
 
     result, negative_flow = validate_bids(parsed, samples=args.samples, seed=args.seed, dt=dt, p_rate=args.p_rate, arrival_paths=arrival_paths)
 
-    print(f"Negative flow count: {negative_flow} percentage: {negative_flow / (args.samples * time_count) * 100:.2f}%")
+    print(f"Negative flow count: {negative_flow} percentage: {negative_flow / (90 * time_count * 144 * 2) * 100:.2f}%")
 
     print(f"Parsed file: {args.input}")
     print(f"Hours: {hour_count}, time steps: {time_count}, dt: {dt:.4f}, samples: {args.samples}")

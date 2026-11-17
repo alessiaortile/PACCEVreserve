@@ -69,6 +69,7 @@ EXTRA_FILES = {
     "CDP_NoPE": f"{PREFIX}_0.9.csv",
     "LDP":      f"{PREFIX}_0.9.csv",
     "Oracle":   "SOC_oracle_bidvalidation_summary_records_0.9.csv.csv",
+    "NPE":      f"SOC_NPE_bidvalidation_summary_records_0.9.csv",
 }
 
 SCALAR_METRICS = [
@@ -79,7 +80,12 @@ SCALAR_METRICS = [
     "total_bid_kw",
     "min_margin",
     "avg_margin",
+    "negative_flow_pct",         # only filled for NEG_FLOW_METHODS
 ]
+
+# negative-flow percentage is computed only for these methods
+NEG_FLOW_METHODS = ["CDP90","NPE"]
+NEG_FLOW_DENOM = 90 * 24 *2        # 90 scenarios x 24 hours x 2 variables (up/down)
 
 
 # --------------------------------------------------------------------------
@@ -107,8 +113,17 @@ def read_one(path: Path, target: float) -> tuple[dict, np.ndarray]:
         "total_bid_kw": float((df["bid_up"] + df["bid_down"]).sum() / 1000.0),
         "min_margin": float(df["min_margin"].min()),
         "avg_margin": float(df["min_margin"].mean()),
+        "negative_flow_pct": negative_flow_pct(df),
     }
     return scalars, hourly
+
+
+def negative_flow_pct(df: pd.DataFrame) -> float:
+    """negative_flow / (90*24) * 100, with negative_flow summed over the rows
+    (hours) of the file. NaN if the column is missing."""
+    if "negative_flow" not in df.columns:
+        return float("nan")
+    return float(df["negative_flow"].mean() / NEG_FLOW_DENOM * 100.0)
 
 
 def find_extra(name: str, td: Path, sd: Path, results_dir: Path, test: int) -> Path | None:
@@ -121,9 +136,10 @@ def find_extra(name: str, td: Path, sd: Path, results_dir: Path, test: int) -> P
         results/oracle/test<T>/
         results/oracle/                 (one shared file)
         results/                        (one shared file)
+        results/NPE/                    (one shared file)
     """
     folders = [td, sd]
-    for base in (results_dir, results_dir / "oracle"):
+    for base in (results_dir, results_dir / "oracle", results_dir / "NPE"):
         if base.is_dir():
             folders += [d for d in sorted(base.glob("test*"))
                         if d.is_dir() and re.fullmatch(r"test[_-]?\d+", d.name)
@@ -149,6 +165,8 @@ def collect(results_dir: Path, target: float):
  
     def add(seed, test, method, eps, path):
         scalars, hourly = read_one(path, target)
+        if method not in NEG_FLOW_METHODS:
+            scalars["negative_flow_pct"] = float("nan")
         scalar_rows.append(
             {"seed": seed, "test": test, "method": method, "eps": eps, **scalars})
         for h, s in enumerate(hourly):
@@ -264,20 +282,25 @@ def pm_table(agg, metric, scale=1.0, fmt="{:.1f}"):
 # plotting
 # --------------------------------------------------------------------------
 COLORS = {
-    "CDP60": "#b30c16", "CDP80": "#ff7f00", "CDP90": "#6A3D9A",
-    "CDP90nB": "#e7298a", "CDP_NoPE": "#008B8B", "LDP": "#7CAE00",
-    "LDPnB": "#e6ab02", "Oracle": "#3F6562",
+    # CDP: purple family, dark -> mid -> light
+    "CDP90": "#6A3D9A", "CDP90nB": "#e7298a", "CDP90nCB": "#e7298a", 
+    "LDP": "#7CAE00", "LDPnB": "#ae9a00", "LDPnCB": "#005931",
+
+    # Standalone, clearly outside both families
+    "NPE":     "#D55E00",   # vermillion
+    "Oracle":  "#222222",   # near-black
 }
+
 MARKERS = {
-    "CDP60": "o", "CDP80": "P", "CDP90": "s", "CDP90nB": "D",
-    "CDP_NoPE": ".", "LDP": "^", "LDPnB": "*", "Oracle": "v",
+     "CDP90": "s", "CDP90nB": "D", "CDP90nCB": "H",
+     "LDP": "^", "LDPnB": "o", "LDPnCB": "X", "Oracle": "v",
 }
 LABELS = {
-    "CDP60": "CDP P60", "CDP80": "CDP P80", "CDP90": "CDP P90",
-    "CDP90nB": "CDP P90 no Bias", "CDP_NoPE": "NoPE P90",
-    "LDP": "LDP P90", "LDPnB": "LDP P90 no Bias", "Oracle": "Oracle",
+    "CDP90": "CDP",
+    "CDP90nB": "CDP-nB","CDP90nCB": "CDP-nCB", "NPE": "NPE P90",
+    "LDP": "LDP", "LDPnB": "LDP-nB","LDPnCB": "LDP-nCB", "Oracle": "Oracle",
 }
-METHOD_ORDER = ["Oracle","CDP90", "CDP90nB", "CDP_NoPE", "LDP", "LDPnB", "CDP60", "CDP80"]
+METHOD_ORDER = ["NPE","CDP90", "CDP90nB",  "LDP", "LDPnB", "CDP60", "CDP80"] #"Oracle",
 
 
 def set_style():
@@ -320,14 +343,14 @@ def band_handles(z):
 def plot_comparison(agg, out_dir, eps_list, z, pct_oracle, log):
     """Methods as lines, eps on x, three stacked metrics."""
     metrics = [
-        ("total_bid_kw", "Bid volume", "[kW]", True),
+        #("total_bid_kw", "Bid volume", "[MW]", True),
         ("objective_value", "Objective", "[€/day]", True),
-        ("empirical_feasibility", "Success prob.", "[%]", False),
+        ("empirical_feasibility", "Success", "[%]", False),
     ]
     methods = [m for m in METHOD_ORDER if m in set(agg["method"])]
-    eps_x = {e: i for i, e in enumerate(sorted(eps_list, reverse=False))}
+    eps_x = {e: i for i, e in enumerate(sorted(eps_list, reverse=True))}
 
-    fig, axes = plt.subplots(3, 1, figsize=(6.5, 8.5), sharex=True,
+    fig, axes = plt.subplots(2, 1, figsize=(6.5, 7.5), sharex=True,
                              gridspec_kw={"hspace": 0.07})
     for ax, (metric, name, unit, can_norm) in zip(axes, metrics):
         if metric == "empirical_feasibility":
@@ -336,14 +359,20 @@ def plot_comparison(agg, out_dir, eps_list, z, pct_oracle, log):
         else:
             scale = 1.0
         ref = agg[(agg["eps"] >= NO_PRIVACY_EPS)]
-        oracle = ref[ref["method"] == "Oracle"]
-        if pct_oracle and can_norm and not oracle.empty:
-            scale = 100.0 / float(oracle.iloc[0][f"{metric}_mean"])
-            unit = "[% of oracle]"
+        # oracle = ref[ref["method"] == "Oracle"]
+        # if pct_oracle and can_norm and not oracle.empty:
+        #     scale = 100.0 / float(oracle.iloc[0][f"{metric}_mean"])
+        #     unit = "[% of oracle]"
 
-        if not oracle.empty:
-            ax.axhline(float(oracle.iloc[0][f"{metric}_mean"]) * scale,
-                       color=COLORS["Oracle"], ls="--", lw=1.5, label="Oracle")
+        # if not oracle.empty:
+        #     ax.axhline(float(oracle.iloc[0][f"{metric}_mean"]) * scale,
+        #                color=COLORS["Oracle"], ls="--", lw=1.5, label="Oracle")
+
+        NPE = ref[ref["method"] == "NPE"]
+        if not NPE.empty:
+            ax.axhline(float(NPE.iloc[0][f"{metric}_mean"]) * scale,
+                       color=COLORS["NPE"], ls="-.", lw=1.5, label="NPE")
+
         npv = ref[ref["method"] == "CDP90"]
         if not npv.empty:
             ax.axhline(float(npv.iloc[0][f"{metric}_mean"]) * scale,
@@ -372,13 +401,13 @@ def plot_comparison(agg, out_dir, eps_list, z, pct_oracle, log):
     axes[-1].set_xlabel(r"Privacy level $\epsilon$")
     for ax in axes:
         ax.invert_xaxis()
-    for ax, tag in zip(axes, ["(a)", "(b)", "(c)"]):
+    for ax, tag in zip(axes, ["(a)", "(b)"]): #, "(c)"
         ax.text(0.02, 0.1, tag, transform=ax.transAxes, va="top", fontweight="bold", fontsize=14)
 
     h, l = axes[0].get_legend_handles_labels()
     fig.legend(h + band_handles(z), l + [x.get_label() for x in band_handles(z)],
-               loc="upper center", ncol=3, bbox_to_anchor=(0.5, 1.0), frameon=True,
-               fontsize=9.5)
+               loc="upper center", ncol=3, bbox_to_anchor=(0.512, 1.01), frameon=True,
+               fontsize=11)
     fig.align_ylabels(axes)
     fig.subplots_adjust(top=0.90)
     for ext, kw in (("pdf", {}), ("png", {"dpi": 300})):
@@ -386,56 +415,124 @@ def plot_comparison(agg, out_dir, eps_list, z, pct_oracle, log):
     plt.close(fig)
 
 
+def plot_negative_flow(agg, out_dir, eps_list, z):
+    """Negative-flow percentage vs epsilon, one line per method (CDP90, LDP)."""
+    metric = "negative_flow_pct"
+    methods = [m for m in NEG_FLOW_METHODS if m in set(agg["method"])]
+    sub_all = agg[agg["method"].isin(methods)]
+    if not methods or sub_all[f"{metric}_mean"].isna().all():
+        print("No negative_flow data found; skipping negative-flow plot.")
+        return
+    eps_x = {e: i for i, e in enumerate(sorted(eps_list))}
+
+    fig, ax = plt.subplots(figsize=(6.5, 3.5))
+    for m in methods:
+        sub = agg[(agg["method"] == m) & (agg["eps"].isin(eps_x))] \
+            .sort_values("eps", ascending=False)
+        if sub.empty:
+            continue
+        x = [eps_x[e] for e in sub["eps"]]
+        y = sub[f"{metric}_mean"].to_numpy()
+        ax.plot(x, y, color=COLORS[m], marker=MARKERS[m], ms=4, lw=1.2, label=LABELS[m])
+        draw_bands(ax, x, y,
+                   z * sub[f"{metric}_noise_std"].to_numpy(),
+                   z * sub[f"{metric}_test_std"].to_numpy(), COLORS[m])
+    ax.set_xticks(list(eps_x.values()))
+    ax.set_xticklabels([eps_tick(e) for e in eps_x])
+    ax.invert_xaxis()
+    ax.set_xlabel(r"Privacy level $\epsilon$")
+    ax.set_ylabel("Negative flow [%]")
+    ax.grid(True, alpha=0.3, ls="--")
+    h, l = ax.get_legend_handles_labels()
+    ax.legend(h + band_handles(z), l + [x.get_label() for x in band_handles(z)],
+              loc="best", fontsize=9, frameon=True)
+    for ext, kw in (("pdf", {}), ("png", {"dpi": 300})):
+        fig.savefig(out_dir / f"negative_flow.{ext}", bbox_inches="tight", **kw)
+    plt.close(fig)
+
+
 def plot_hourly(hourly_agg, method, out_dir, eps_list, z, target):
-    """One panel per eps: per-hour success probability, noise and test spread."""
+    """One panel per eps, stacked vertically. Every panel has its own y-range and
+    its height is proportional to that range (same inches per % point)."""
     sub = hourly_agg[hourly_agg["method"] == method]
     eps_here = sorted([e for e in sub["eps"].unique()
-                       if e in set(eps_list) or e >= NO_PRIVACY_EPS], reverse=True)
+                       if (e == 8.0  or e == 0.5 or e == NO_PRIVACY_EPS) and  (e in set(eps_list) or e >= NO_PRIVACY_EPS)], reverse=True) #or e == 2.0
+                       
     if not eps_here:
         return
-    ncols = min(3, len(eps_here))
-    nrows = int(np.ceil(len(eps_here) / ncols))
-    fig, axes = plt.subplots(nrows, ncols, figsize=(4 * ncols, 2.7 * nrows + 0.9),
-                             sharex=True, sharey=True, squeeze=False)
-    axes = axes.flatten()
-    color = COLORS[method]
 
-    lows = []
-    for ax, e in zip(axes, eps_here):
+    # ---- 1) data and independent y-range per panel ----
+    data, ylims = {}, {}
+    for e in eps_here:
         d = sub[sub["eps"] == e].sort_values("hour")
-        h = d["hour"].to_numpy()
         y = d["success_mean"].to_numpy() * 100
         noise = z * d["noise_std"].fillna(0).to_numpy() * 100
         test = z * d["test_std"].fillna(0).to_numpy() * 100
+        data[e] = (d["hour"].to_numpy(), y, noise, test)
+        low = np.min(np.clip(y - np.maximum(noise, test), 0, 100))
+        ylims[e] = (min(85,max(0.0, np.floor((low - 3) / 5) * 5)), 101.0)
+
+    # ---- 2) layout in inches ----
+    in_per_pct = 0.024            # panel height per % point (span 100 -> 2.4 in)
+    h_min = 0.9                   # never smaller than this
+    ax_w = 3.5                    # panel width
+    gap_in = 0.28                 # space between panels (holds the panel title)
+    left_in, right_in = 0.55, 0.1
+    bottom_in = 0.45              # x tick labels + "Hour"
+    top_in = 0.75                 # suptitle + legend + first panel title
+
+    heights = [max(h_min, in_per_pct * (ylims[e][1] - ylims[e][0])) for e in eps_here]
+
+    # NEW: the stack must be tall enough to hold the y label (~1.7 in)
+    min_stack = 1.7
+    stack = sum(heights) + gap_in * (len(eps_here) - 1)
+    if stack < min_stack:
+        scale = (min_stack - gap_in * (len(eps_here) - 1)) / sum(heights)
+        heights = [h * scale for h in heights]
+        stack = min_stack
+    fig_w = ax_w + left_in + right_in
+    fig_h = sum(heights) + gap_in * (len(eps_here) - 1) + bottom_in + top_in
+    fig = plt.figure(figsize=(fig_w, fig_h))
+
+    color = COLORS[method]
+    axes, top = [], fig_h - top_in
+    for i, (e, hgt) in enumerate(zip(eps_here, heights)):
+        bottom = top - hgt
+        ax = fig.add_axes([left_in / fig_w, bottom / fig_h, ax_w / fig_w, hgt / fig_h],
+                          sharex=axes[0] if axes else None)
+        top = bottom - gap_in
+        axes.append(ax)
+
+        h, y, noise, test = data[e]
         ax.plot(h, y, color=color, lw=2)
         ax.fill_between(h, np.clip(y - noise, 0, 100), np.clip(y + noise, 0, 100),
                         color=color, alpha=0.22, lw=0)
         ax.plot(h, np.clip(y + test, 0, 100), color=color, ls="--", lw=1.0)
         ax.plot(h, np.clip(y - test, 0, 100), color=color, ls="--", lw=1.0)
-        ax.axhline(target * 100, color="red", lw=1, ls="--", alpha=0.8)
-        ax.set_title("No privacy" if e >= NO_PRIVACY_EPS else rf"$\epsilon={e:g}$")
+        ax.axhline(target * 100, color="red", lw=1, ls="--", alpha=1)
+        ax.set_ylim(*ylims[e])
+        ax.set_title("No privacy" if e >= NO_PRIVACY_EPS else rf"$\epsilon={e:g}$", pad=2)
         ax.set_xticks(range(0, 24, 3))
         ax.set_xticks(range(24), minor=True)
+        ax.tick_params(axis="both", pad=1.5)
         ax.grid(True, which="major", alpha=0.3)
         ax.grid(True, which="minor", alpha=0.12)
-        lows.append(np.min(np.clip(y - np.maximum(noise, test), 0, 100)))
-    for ax in axes[len(eps_here):]:
-        ax.set_visible(False)
+        if i < len(eps_here) - 1:                 # x labels only on the bottom panel
+            ax.tick_params(axis="x", labelbottom=False)
 
-    lo = max(0.0, np.floor((min(lows) - 3) / 5) * 5)
-    axes[0].set_ylim(lo, 101)
-    fig.supxlabel("Hour")
-    fig.supylabel("Success probability [%]")
-    fig.suptitle(LABELS[method], y=0.995)
-    fig.tight_layout(rect=[0, 0, 1, 0.86])
+    fig.supxlabel("Hour", y=0.0, va="bottom")
+    fig.supylabel("Success [%]", x=0.0, ha="left")
+    fig.suptitle(LABELS[method], y=1.0, va="top", fontsize=11)
     fig.legend(handles=band_handles(z) + [Line2D([0], [0], color="red", ls="--", lw=1,
                label=f"Target {target:.0%}")],
-               loc="upper center", ncol=3, bbox_to_anchor=(0.5, 0.945), frameon=False,
-               fontsize=9.5)
-    for ext, kw in (("pdf", {}), ("png", {"dpi": 300})):
-        fig.savefig(out_dir / f"hourly_success_{method}.{ext}", bbox_inches="tight", **kw)
-    plt.close(fig)
+               loc="upper center", ncol=3,
+               bbox_to_anchor=(0.5, 1 - 0.26 / fig_h), frameon=False,
+               fontsize=11, handlelength=1.2, columnspacing=0.5, borderpad=0.1)
 
+    for ext, kw in (("pdf", {}), ("png", {"dpi": 300})):
+        fig.savefig(out_dir / f"hourly_success_{method}.{ext}",
+                    bbox_inches="tight", pad_inches=0.02, **kw)
+    plt.close(fig)
 
 def main() -> None:
     ap = argparse.ArgumentParser()
@@ -474,10 +571,17 @@ def main() -> None:
         ("Mean bid success probability [%]", "empirical_feasibility", 100.0, "{:.1f}"),
         ("Worst-hour success probability [%]", "worst_hour_success", 100.0, "{:.1f}"),
         ("Hours below target [count]", "hours_below_target", 1.0, "{:.1f}"),
-        ("Total bid volume [kW]", "total_bid_kw", 1.0, "{:.1f}"),
+        ("Total bid volume [MW]", "total_bid_kw", 1.0, "{:.1f}"),
+        ("Negative flow [% of 90*24]", "negative_flow_pct", 1.0, "{:.2f}"),
     ]
     for title, metric, scale, fmt in tables:
-        t = pm_table(agg, metric, scale, fmt)
+        if metric == "negative_flow_pct":
+            a = agg[agg["method"].isin(NEG_FLOW_METHODS)]
+            if a[f"{metric}_mean"].isna().all():
+                continue
+            t = pm_table(a, metric, scale, fmt)
+        else:
+            t = pm_table(agg, metric, scale, fmt)
         print(f"\n=== {title} ===")
         print(t.to_string())
         t.to_csv(out_dir / f"table_{metric}.csv")
@@ -502,7 +606,9 @@ def main() -> None:
         eps_list = args.eps or sorted(
             e for e in agg["eps"].unique() if e < NO_PRIVACY_EPS)
         plot_comparison(agg, fig_dir, eps_list, args.band_z, args.pct_oracle, args.log)
+        plot_negative_flow(agg, fig_dir, eps_list, args.band_z)
         for method in agg["method"].unique():
+            print(f"Plotting hourly success for {method}...")
             plot_hourly(hourly_agg, method, fig_dir, eps_list, args.band_z, args.target)
         print(f"Saved figures to {fig_dir}")
 

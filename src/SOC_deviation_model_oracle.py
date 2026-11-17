@@ -386,7 +386,7 @@ def cooptimization(lam,sigma, status, flex_state, price_up, price_down, real_pri
         reserve capacities, and disturbance-feedback coefficients.
     """
 
-    arrival_deviation_lower, arrival_deviation_upper = deviation_bounds(lam, alpha=0.95)
+    arrival_deviation_lower, arrival_deviation_upper = deviation_bounds(lam, alpha=0.99)
     next_charge, next_slack = build_state_predecessor_maps(status)
     idx = {(c, s): i for i, (c, s) in enumerate(status)}
 
