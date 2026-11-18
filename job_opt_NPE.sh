@@ -26,14 +26,14 @@ module load gurobipy/gurobi-12.0.1-python-3.11.9
 
 SEEDS_test=(2718 3141 4096 5381 6029 7919 8191 9973 10007 12345 20240 31337 42424 65537)
 
-python -u src/SOC_deviation_model_NPE.py --scale 100 
+#python -u src/SOC_deviation_model_NPE.py --scale 100 
 
-# i=0
-# for S in "${SEEDS_test[@]}"; do
-#     echo "=== test ${i} ==="
-#     python -u src/SOC_bid_validation.py --records data/seed${S}/ev_records_100_oos.csv --input results/NPE/SOC_B_policy_results_100_0.9_NPE.pkl --output results/NPE/test${i}/SOC_NPE_bidvalidation_summary_records_0.9.csv
-#     i=$((i + 1))
-# done
+i=0
+for S in "${SEEDS_test[@]}"; do
+    echo "=== test ${i} ==="
+    python -u src/SOC_bid_validation.py --records data/seed${S}/ev_records_100_oos.csv --input results/NPE/SOC_B_policy_results_100_0.9_NPE.pkl --output results/NPE/test${i}/SOC_NPE_bidvalidation_summary_records_0.9.csv
+    i=$((i + 1))
+done
 
 #python -u src/SOC_deviation_model_oracle.py --scale 100 
 #python -u src/SOC_bid_validation.py --input results/SOC_oracle_results_100_0.9.pkl --output results/SOC_oracle_bidvalidation_summary_records_0.9.csv --sample 1000 #--records data/ev_records_100_oos.csv

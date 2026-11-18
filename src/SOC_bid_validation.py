@@ -583,7 +583,7 @@ def validate_bids(parsed: ParsedPolicyOutput, samples: int, seed: int, dt: float
             bid_down = float(parsed.bid_down[h])
 
             # Calculate the revenue from the bid
-            bid_revenue = bid_up * price_bup_d[s_idx][h] + bid_down * price_bdown_d[s_idx][h] # make the price also dependent on the day realization
+           
 
             margin_up = cap_up - (bid_up + 0.2 * bid_down)
             margin_down = cap_down - bid_down
@@ -594,6 +594,12 @@ def validate_bids(parsed: ParsedPolicyOutput, samples: int, seed: int, dt: float
 
             
             is_feasible = (margin_up >= -1e-1) and (margin_down >= -1e-1)
+
+            # Revenue only if the bid is deliverable
+            if is_feasible:
+                bid_revenue = bid_up * price_bup_d[s_idx][h] + bid_down * price_bdown_d[s_idx][h] # make the price also dependent on the day realization
+            else:
+                bid_revenue = 0.0
 
             # Count per-hour stats
             per_hour_total[h] += 1

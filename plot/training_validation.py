@@ -44,6 +44,8 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
 from matplotlib.patches import Patch
+
+from matplotlib.ticker import MaxNLocator
 import numpy as np
 import pandas as pd
 
@@ -84,8 +86,8 @@ SCALAR_METRICS = [
 ]
 
 # negative-flow percentage is computed only for these methods
-NEG_FLOW_METHODS = ["CDP90","NPE"]
-NEG_FLOW_DENOM = 90 * 24 *2        # 90 scenarios x 24 hours x 2 variables (up/down)
+NEG_FLOW_METHODS = ["CDP90","NPE", "LDP"]
+NEG_FLOW_DENOM = 90 * 24 *2*144        # 90 scenarios x 24 hours x 2 variables x 144 states (up/down)
 
 
 # --------------------------------------------------------------------------
@@ -100,22 +102,22 @@ def parse_num(name: str, word: str) -> int:
     m = re.search(rf"{word}[_-]?(\d+)", name)
     return int(m.group(1)) if m else -1
 
-
-def read_one(path: Path, target: float) -> tuple[dict, np.ndarray]:
+def read_one(path: Path, target: float) -> tuple[dict, np.ndarray, np.ndarray]:
     df = pd.read_csv(path)
     df.columns = df.columns.str.strip()
     hourly = df["empirical_feasibility"].to_numpy(dtype=float)  # per hour
+    bid_hourly = (df["bid_up"] + df["bid_down"]).to_numpy(dtype=float)  # per hour
     scalars = {
         "objective_value": float(df["net_profit_mean"].mean()),
         "empirical_feasibility": float(df["p90_success_rate"].mean()),
         "worst_hour_success": float(hourly.min()),
         "hours_below_target": int((hourly < target).sum()),
-        "total_bid_kw": float((df["bid_up"] + df["bid_down"]).sum() / 1000.0),
+        "total_bid_kw": float((df["bid_up"] + df["bid_down"]).sum()),
         "min_margin": float(df["min_margin"].min()),
         "avg_margin": float(df["min_margin"].mean()),
         "negative_flow_pct": negative_flow_pct(df),
     }
-    return scalars, hourly
+    return scalars, hourly, bid_hourly
 
 
 def negative_flow_pct(df: pd.DataFrame) -> float:
@@ -164,14 +166,14 @@ def collect(results_dir: Path, target: float):
     shared_extras = set()  # (method) read from a folder shared by several tests
  
     def add(seed, test, method, eps, path):
-        scalars, hourly = read_one(path, target)
+        scalars, hourly, bid_hourly = read_one(path, target)
         if method not in NEG_FLOW_METHODS:
             scalars["negative_flow_pct"] = float("nan")
         scalar_rows.append(
             {"seed": seed, "test": test, "method": method, "eps": eps, **scalars})
         for h, s in enumerate(hourly):
             hourly_rows.append({"seed": seed, "test": test, "method": method,
-                                "eps": eps, "hour": h, "success": s})
+                                "eps": eps, "hour": h, "success": s,"bid_kw": bid_hourly[h]})
  
     for sd in seed_dirs:
         seed = parse_num(sd.name, "seed")
@@ -251,6 +253,8 @@ def aggregate_scalars(per_run: pd.DataFrame, target: float) -> pd.DataFrame:
 def aggregate_hourly(hourly: pd.DataFrame, target: float) -> pd.DataFrame:
     keys = ["method", "eps", "hour"]
     d = decompose(hourly, "success", keys)
+    bid = decompose(hourly, "bid_kw", keys)[["mean", "noise_std", "test_std"]].add_prefix("bid_")
+    d = d.join(bid)          # bid_mean, bid_noise_std, bid_test_std  [kW per hour]
     d["violation_mean"] = 1 - d["mean"]
     d["share_runs_below_target"] = (hourly["success"] < target) \
         .groupby([hourly[k] for k in keys]).mean()
@@ -450,16 +454,67 @@ def plot_negative_flow(agg, out_dir, eps_list, z):
         fig.savefig(out_dir / f"negative_flow.{ext}", bbox_inches="tight", **kw)
     plt.close(fig)
 
+def print_negative_flow_table(agg, eps_list):
+    metric = "negative_flow_pct"
+    methods = [m for m in NEG_FLOW_METHODS if m in set(agg["method"])]
+
+    if not methods:
+        print("No negative_flow data found.")
+        return
+
+    eps_sorted = sorted(eps_list, reverse=True)
+
+    # Header
+    cols = "l" + "c" * len(eps_sorted)
+    print(r"\begin{table}[t]")
+    print(r"\centering")
+    print(r"\caption{Percentage of negative flows.}")
+    print(f"\\begin{{tabular}}{{{cols}}}")
+    print(r"\toprule")
+
+    header = "Method & " + " & ".join(f"$\\epsilon={e}$" for e in eps_sorted) + r" \\"
+    print(header)
+    print(r"\midrule")
+
+    for m in methods:
+        row = [LABELS[m]]
+
+        for eps in eps_sorted:
+            sub = agg[(agg["method"] == m) & (agg["eps"] == eps)]
+
+            if sub.empty or pd.isna(sub[f"{metric}_mean"].iloc[0]):
+                row.append("--")
+            else:
+                mean = sub[f"{metric}_mean"].iloc[0]
+                std = sub[f"{metric}_test_std"].iloc[0]
+                row.append(f"{mean:.4f} $\\pm$ {std:.4f}")
+
+        print(" & ".join(row) + r" \\")
+
+    print(r"\bottomrule")
+    print(r"\end{tabular}")
+    print(r"\label{tab:negative_flow}")
+    print(r"\end{table}")
+
+
 
 def plot_hourly(hourly_agg, method, out_dir, eps_list, z, target):
     """One panel per eps, stacked vertically. Every panel has its own y-range and
-    its height is proportional to that range (same inches per % point)."""
+    its height is proportional to that range (same inches per % point).
+    The average bid volume is drawn on a right axis over the full panel height."""
     sub = hourly_agg[hourly_agg["method"] == method]
     eps_here = sorted([e for e in sub["eps"].unique()
-                       if (e == 8.0  or e == 0.5 or e == NO_PRIVACY_EPS) and  (e in set(eps_list) or e >= NO_PRIVACY_EPS)], reverse=True) #or e == 2.0
-                       
+                       if (e in set(eps_list) or e >= NO_PRIVACY_EPS)], reverse=True)
     if not eps_here:
         return
+
+    BID_COLOR = "0.30"
+
+    # one common right-axis range for all panels of this figure
+    sub_e = sub[sub["eps"].isin(eps_here)]
+    bid_top = float(np.nanmax((sub_e["bid_mean"] + z * sub_e["bid_noise_std"].fillna(0)).to_numpy()))
+    bid_top = bid_top * 1.08 if bid_top > 0 else 1.0
+    print(f"Max bid volume: {bid_top:.2f} kW")
 
     # ---- 1) data and independent y-range per panel ----
     data, ylims = {}, {}
@@ -468,22 +523,23 @@ def plot_hourly(hourly_agg, method, out_dir, eps_list, z, target):
         y = d["success_mean"].to_numpy() * 100
         noise = z * d["noise_std"].fillna(0).to_numpy() * 100
         test = z * d["test_std"].fillna(0).to_numpy() * 100
-        data[e] = (d["hour"].to_numpy(), y, noise, test)
+        by = d["bid_mean"].to_numpy()
+        bn = z * d["bid_noise_std"].fillna(0).to_numpy()
+        data[e] = (d["hour"].to_numpy(), y, noise, test, by, bn)
         low = np.min(np.clip(y - np.maximum(noise, test), 0, 100))
-        ylims[e] = (min(85,max(0.0, np.floor((low - 3) / 5) * 5)), 101.0)
+        ylims[e] = (min(58, max(0.0, np.floor((low - 3) / 5) * 5)), 101.0)
 
     # ---- 2) layout in inches ----
-    in_per_pct = 0.024            # panel height per % point (span 100 -> 2.4 in)
-    h_min = 0.9                   # never smaller than this
-    ax_w = 3.5                    # panel width
-    gap_in = 0.28                 # space between panels (holds the panel title)
-    left_in, right_in = 0.55, 0.1
-    bottom_in = 0.45              # x tick labels + "Hour"
-    top_in = 0.75                 # suptitle + legend + first panel title
+    in_per_pct = 0.024
+    h_min = 0.9
+    ax_w = 3.5
+    gap_in = 0.28
+    left_in, right_in = 0.55, 0.6      # room on the right for the bid axis
+    bottom_in = 0.45
+    top_in = 1.0                       # suptitle + legend + first panel title
 
     heights = [max(h_min, in_per_pct * (ylims[e][1] - ylims[e][0])) for e in eps_here]
 
-    # NEW: the stack must be tall enough to hold the y label (~1.7 in)
     min_stack = 1.7
     stack = sum(heights) + gap_in * (len(eps_here) - 1)
     if stack < min_stack:
@@ -503,7 +559,7 @@ def plot_hourly(hourly_agg, method, out_dir, eps_list, z, target):
         top = bottom - gap_in
         axes.append(ax)
 
-        h, y, noise, test = data[e]
+        h, y, noise, test, by, bn = data[e]
         ax.plot(h, y, color=color, lw=2)
         ax.fill_between(h, np.clip(y - noise, 0, 100), np.clip(y + noise, 0, 100),
                         color=color, alpha=0.22, lw=0)
@@ -512,7 +568,7 @@ def plot_hourly(hourly_agg, method, out_dir, eps_list, z, target):
         ax.axhline(target * 100, color="red", lw=1, ls="--", alpha=1)
         ax.set_ylim(*ylims[e])
         ax.set_title("No privacy" if e >= NO_PRIVACY_EPS else rf"$\epsilon={e:g}$", pad=2)
-        ax.set_xticks(range(0, 24, 3))
+        ax.set_xticks(range(0, 24, 2))
         ax.set_xticks(range(24), minor=True)
         ax.tick_params(axis="both", pad=1.5)
         ax.grid(True, which="major", alpha=0.3)
@@ -520,20 +576,35 @@ def plot_hourly(hourly_agg, method, out_dir, eps_list, z, target):
         if i < len(eps_here) - 1:                 # x labels only on the bottom panel
             ax.tick_params(axis="x", labelbottom=False)
 
+        # average bid volume (right axis), full panel height, may overlap success
+        ax2 = ax.twinx()
+        ax2.plot(h, by, color=BID_COLOR, ls="-.", lw=1.3)
+        ax2.fill_between(h, np.maximum(by - bn, 0), by + bn, color=BID_COLOR, alpha=0.15, lw=0)
+        ax2.set_ylim(0, max(bid_top*1.3,15000))
+        ax2.grid(True, which="major", alpha=0.3)
+        ax2.tick_params(axis="y", pad=1.5)
+        #ax.set_zorder(ax2.get_zorder() + 1)       # keep the success curve on top
+        #ax.patch.set_visible(False)
+
     fig.supxlabel("Hour", y=0.0, va="bottom")
-    fig.supylabel("Success [%]", x=0.0, ha="left")
+    y_center = (bottom_in + stack / 2) / fig_h
+    fig.supylabel("Success [%]", x=0.0, y=y_center, ha="left", va="center")
+    fig.text(1.01 - 0.1 / fig_w, y_center, "Avg. bid volume [kW]", fontsize=11, fontname="Times New Roman",
+             rotation=270, va="center", ha="center")
     fig.suptitle(LABELS[method], y=1.0, va="top", fontsize=11)
-    fig.legend(handles=band_handles(z) + [Line2D([0], [0], color="red", ls="--", lw=1,
-               label=f"Target {target:.0%}")],
-               loc="upper center", ncol=3,
+    fig.legend(handles=band_handles(z) + [
+                   Line2D([0], [0], color="red", ls="--", lw=1, label=f"Target {target:.0%}"),
+                   Line2D([0], [0], color=BID_COLOR, ls="-.", lw=1.3,
+                          label="Avg. bid volume (right axis)"),
+                   Patch(facecolor=BID_COLOR, alpha=0.2, label="Bid volume: privacy-noise spread")],
+               loc="upper center", ncol=2,
                bbox_to_anchor=(0.5, 1 - 0.26 / fig_h), frameon=False,
-               fontsize=11, handlelength=1.2, columnspacing=0.5, borderpad=0.1)
+               fontsize=8.5, handlelength=1.2, columnspacing=0.5, borderpad=0.1)
 
     for ext, kw in (("pdf", {}), ("png", {"dpi": 300})):
         fig.savefig(out_dir / f"hourly_success_{method}.{ext}",
                     bbox_inches="tight", pad_inches=0.02, **kw)
     plt.close(fig)
-
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--results-dir", type=Path, default=ROOT / "results")
@@ -606,9 +677,9 @@ def main() -> None:
         eps_list = args.eps or sorted(
             e for e in agg["eps"].unique() if e < NO_PRIVACY_EPS)
         plot_comparison(agg, fig_dir, eps_list, args.band_z, args.pct_oracle, args.log)
-        plot_negative_flow(agg, fig_dir, eps_list, args.band_z)
+        #plot_negative_flow(agg, fig_dir, eps_list, args.band_z)
+        print_negative_flow_table(agg, eps_list)
         for method in agg["method"].unique():
-            print(f"Plotting hourly success for {method}...")
             plot_hourly(hourly_agg, method, fig_dir, eps_list, args.band_z, args.target)
         print(f"Saved figures to {fig_dir}")
 
